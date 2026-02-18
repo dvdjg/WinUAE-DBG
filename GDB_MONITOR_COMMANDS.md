@@ -112,24 +112,18 @@ The output file format is compatible with the vscode-amiga-debug Frame Profiler 
 
 ## Usage from MCP (mcp-winuae-emu)
 
-The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, `winuae_input_event`, `winuae_input_joy`, `winuae_input_mouse`, `winuae_insert_disk`, `winuae_eject_disk`, `winuae_profile`, and the **graphics/audio/low-level tools** below. When connected, insert/eject use the monitor commands for hot-swap (no restart). `winuae_profile` captures the same exhaustive frame data (DMA per scanline, blitter, CRT flow) as the vscode-amiga-debug profiler for autonomous analysis.
+The MCP server exposes monitor commands and a small set of **core tools**. Graphics/audio extraction and low-level debugging (e.g. [coppenheimer](https://github.com/losso3000/coppenheimer)-style toggles) are done with the same core tools — no redundant proxies:
 
-### Graphics, audio, and low-level debugging (MCP)
+- **winuae_custom_registers**: Returns all $DFF000–$DFF1FE registers with names. From the output you get BPLCON0, BPL1–6 PTH/PTL (bitplane pointers: 24-bit = high byte of PTH << 16 | PTL), AUD0–3 LCH/LCL/LEN/PER/VOL (Paula), DMACON, DIW/DDF, COLOR00–31, SPR0–7 PTH/PTL, COP1LCH/L. Use this to derive bitmap addresses and dimensions, then use **winuae_memory_read** to dump bitplane data (address from BPL1PTH/L, length = row_bytes × height × num_planes) or sample data (address from AUDxLC, length from AUDxLEN×2).
+- **winuae_memory_read**: Read any address/length; use for bitplane dumps, sample dumps, or chunked reads to search for hex patterns in RAM.
+- **winuae_memory_write**: Write hex bytes to any address. To toggle hardware: write 2 bytes (big-endian) to $DFF100 (BPLCON0) or $DFF096 (DMACON; bit 9=sprites, bit 8=bitplanes).
+- **winuae_memory_dump**: Hex+ASCII dump of a region; use to inspect registers or search visually.
+- **winuae_copper_disassemble**: Decode Copper list; use COP1LCH/L from custom_registers as the address.
 
-These MCP tools use GDB memory read/write (no extra monitor commands). They allow extraction of graphics and sound from a running game and coppenheimer-style toggles:
-
-| MCP tool | Purpose |
-|----------|--------|
-| `winuae_gfx_state` | Read BPLCON0, bitplane/sprite pointers, DIW/DDF, DMACON, palette. Use to get bitmap addresses and dimensions for extraction. |
-| `winuae_audio_state` | Read Paula channels (AUD0–3: sample pointer, length, period, volume). Optional `samples_hex` to dump raw sample data from chip RAM. |
-| `winuae_bitmap_read` | Read raw bitplane data from chip RAM (address, row_bytes, height, num_planes). Decode planar→image externally. |
-| `winuae_memory_search` | Search RAM for a hex pattern (e.g. Copper lists, graphics signatures). Returns first match offset. |
-| `winuae_custom_write` | Write a 16-bit value to a custom register by name (e.g. BPLCON0, DMACON). Toggle bitplanes or sprites on/off for debugging. |
-
-Together with `winuae_custom_registers`, `winuae_copper_disassemble`, and `winuae_memory_read`/`winuae_memory_dump`, you can analyze and extract assets from binaries and inspect mechanics/timings at a low level.
+With these, an AI can extract graphics/sound, search for patterns, and enable/disable bitplanes or sprites without extra MCP tools.
 
 ## Audio, Disk, and Future Extensions
 
-- **Audio**: Paula state and optional sample dump via MCP `winuae_audio_state` (reads $DFF0A0–$DFF0D8).
-- **Bitmap extraction**: Use `winuae_gfx_state` to get BPL pointers and dimensions, then `winuae_bitmap_read` or `winuae_memory_read` for raw planar data; decode externally. Screenshot command still captures the rendered display.
+- **Audio**: Read Paula via `winuae_custom_registers` (AUD0–3 at $DFF0A0–$DFF0D8), then `winuae_memory_read` at AUDxLC for sample data.
+- **Bitmap extraction**: Get BPL pointers and DIW/DDF from `winuae_custom_registers`, then `winuae_memory_read` at BPL1 address with length row_bytes×height×num_planes; decode planar externally. Screenshot command still captures the rendered display.
 - **Disk sectors**: Direct disk sector access is not exposed in monitor commands. Use memory-mapped floppy access or filesystem tools instead.
