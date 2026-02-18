@@ -733,6 +733,30 @@ namespace barto_gdbserver {
 										savestate_quick(0, 0); // restore state saved at process entry
 										barto_debug_resources_count = 0;
 										response += "OK";
+									} else if(cmd.substr(0, strlen("input event ")) == "input event ") {
+										// syntax: monitor input event <event_id> [state]
+										// event_id: WinUAE input event ID from config (e.g. keyboard scancode mapping)
+										// state: 1=press, 0=release, 2=toggle (default 1)
+										auto s = cmd.substr(strlen("input event "));
+										int nr = atoi(s.c_str());
+										int state = 1;
+										auto space = s.find(' ');
+										if(space != std::string::npos)
+											state = atoi(s.c_str() + space + 1);
+										send_input_event(nr, state, 1, 0);
+										response += "OK";
+									} else if(cmd.substr(0, strlen("input key ")) == "input key ") {
+										// syntax: monitor input key <scancode> <1|0>
+										// Amiga raw scancode 0x00-0x7F. Event ID = 256 + scancode (common default).
+										auto sk = cmd.substr(strlen("input key "));
+										int scancode = strtol(sk.c_str(), nullptr, 0);
+										int kstate = 1;
+										auto sp2 = sk.find(' ');
+										if(sp2 != std::string::npos)
+											kstate = atoi(sk.c_str() + sp2 + 1);
+										const int evt = 256 + (scancode & 0x7F);
+										send_input_event(evt, kstate, 1, 0);
+										response += "OK";
 									} else {
 										// unknown monitor command
 										response += "E01";

@@ -116,3 +116,17 @@ En esta rama/copia del proyecto se ha ajustado lo siguiente para facilitar la co
 - No ha sido necesario renombrar archivos `.cpp` a `.c` ni adaptar cabeceras para compilar en 32 o 64 bits.
 
 Si tras desplegar estos cambios usas **VS2022**, y el proyecto da error de toolset, en las propiedades del proyecto (todas las configuraciones) cambia *Conjunto de herramientas de la plataforma* a **v143**.
+
+---
+
+## Servidor GDB y comandos monitor
+
+El ejecutable **winuae-gdb.exe** incluye un servidor GDB (puerto 2345) para depuración remota de programas Amiga. También admite comandos monitor extendidos vía `qRcmd`:
+
+- **screenshot** – capturar la pantalla a PNG
+- **disasm** – desensamblar m68k en una dirección
+- **input key/event** – simular teclado (scancodes o event IDs)
+- **reset** – restaurar savestate en la entrada del proceso
+- **profile** – perfilado de CPU (avanzado)
+
+Ver [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) para detalles y ejemplos. Para usar con MCP (mcp-winuae-emu), apunta `WINUAE_PATH` al directorio donde está `winuae-gdb.exe`.
