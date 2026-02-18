@@ -41,6 +41,34 @@ Send a raw WinUAE input event.
 
 Use `input event` when you need precise control over the event ID for non-default configs.
 
+### input joy \<port\> \<dir|button\> \<1|0\>
+
+Simulate joystick/gamepad input.
+
+- **port**: 0 = joystick port 1, 1 = joystick port 2
+- **dir|button**: `left`, `right`, `up`, `down`, `fire`/`b1`, `2nd`/`b2`, `3rd`/`b3`
+- **state**: 1 = press, 0 = release
+- **Example**: `monitor input joy 0 left 1`, `monitor input joy 0 fire 0`
+
+### input mouse move \<dx\> \<dy\>
+
+Apply relative mouse movement (deltas in pixels).
+
+- **Example**: `monitor input mouse move 50 -20`
+
+### input mouse abs \<x\> \<y\>
+
+Set absolute mouse position.
+
+- **Example**: `monitor input mouse abs 320 200`
+
+### input mouse button \<0|1|2\> \<1|0\>
+
+Simulate mouse button press/release.
+
+- **button**: 0 = left, 1 = right, 2 = middle
+- **Example**: `monitor input mouse button 0 1` (press left), `monitor input mouse button 0 0` (release)
+
 ### reset
 
 Restore the savestate at process entry. Requires `debugging_trigger` to be set in the config.
@@ -62,7 +90,7 @@ CPU profiling (advanced). Runs for N frames, uses unwind info, writes profile ou
 
 ## Usage from MCP (mcp-winuae-emu)
 
-The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, and `winuae_input_event`.
+The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, `winuae_input_event`, `winuae_input_joy`, and `winuae_input_mouse`.
 
 ## Audio, Disk, and Future Extensions
 

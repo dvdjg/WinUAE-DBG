@@ -757,6 +757,62 @@ namespace barto_gdbserver {
 										const int evt = 256 + (scancode & 0x7F);
 										send_input_event(evt, kstate, 1, 0);
 										response += "OK";
+									} else if(cmd.substr(0, strlen("input joy ")) == "input joy ") {
+										// syntax: monitor input joy <port> <left|right|up|down|fire|2nd|3rd> <1|0>
+										// port: 0=joystick 1, 1=joystick 2
+										auto sj = cmd.substr(strlen("input joy "));
+										int port = atoi(sj.c_str());
+										auto sp1 = sj.find(' ');
+										if(sp1 == std::string::npos) { response += "E01"; } else {
+											auto rest = sj.substr(sp1 + 1);
+											auto sp2 = rest.find(' ');
+											std::string dir = sp2 != std::string::npos ? rest.substr(0, sp2) : rest;
+											int state = (sp2 != std::string::npos) ? atoi(rest.c_str() + sp2 + 1) : 1;
+											int evt = -1;
+											if(port == 0) {
+												if(dir == "left") evt = INPUTEVENT_JOY1_LEFT; else if(dir == "right") evt = INPUTEVENT_JOY1_RIGHT;
+												else if(dir == "up") evt = INPUTEVENT_JOY1_UP; else if(dir == "down") evt = INPUTEVENT_JOY1_DOWN;
+												else if(dir == "fire" || dir == "b1") evt = INPUTEVENT_JOY1_FIRE_BUTTON;
+												else if(dir == "2nd" || dir == "b2") evt = INPUTEVENT_JOY1_2ND_BUTTON; else if(dir == "3rd" || dir == "b3") evt = INPUTEVENT_JOY1_3RD_BUTTON;
+											} else if(port == 1) {
+												if(dir == "left") evt = INPUTEVENT_JOY2_LEFT; else if(dir == "right") evt = INPUTEVENT_JOY2_RIGHT;
+												else if(dir == "up") evt = INPUTEVENT_JOY2_UP; else if(dir == "down") evt = INPUTEVENT_JOY2_DOWN;
+												else if(dir == "fire" || dir == "b1") evt = INPUTEVENT_JOY2_FIRE_BUTTON;
+												else if(dir == "2nd" || dir == "b2") evt = INPUTEVENT_JOY2_2ND_BUTTON; else if(dir == "3rd" || dir == "b3") evt = INPUTEVENT_JOY2_3RD_BUTTON;
+											}
+											if(evt >= 0) { send_input_event(evt, state, 1, 0); response += "OK"; } else { response += "E01"; }
+										}
+									} else if(cmd.substr(0, strlen("input mouse move ")) == "input mouse move ") {
+										// syntax: monitor input mouse move <dx> <dy>
+										// Relative mouse movement (deltas)
+										auto sm = cmd.substr(strlen("input mouse move "));
+										int dx = atoi(sm.c_str());
+										auto sp = sm.find(' ');
+										int dy = sp != std::string::npos ? atoi(sm.c_str() + sp + 1) : 0;
+										setmousestate(0, 0, dx, 0);
+										setmousestate(0, 1, dy, 0);
+										response += "OK";
+									} else if(cmd.substr(0, strlen("input mouse abs ")) == "input mouse abs ") {
+										// syntax: monitor input mouse abs <x> <y>
+										auto sa = cmd.substr(strlen("input mouse abs "));
+										int x = atoi(sa.c_str());
+										auto sp = sa.find(' ');
+										int y = sp != std::string::npos ? atoi(sa.c_str() + sp + 1) : 0;
+										setmousestate(0, 0, x, 1);
+										setmousestate(0, 1, y, 1);
+										response += "OK";
+									} else if(cmd.substr(0, strlen("input mouse button ")) == "input mouse button ") {
+										// syntax: monitor input mouse button <0|1|2> <1|0>
+										// 0=left, 1=right, 2=middle
+										auto sb = cmd.substr(strlen("input mouse button "));
+										int btn = atoi(sb.c_str());
+										int bstate = 1;
+										auto sp = sb.find(' ');
+										if(sp != std::string::npos) bstate = atoi(sb.c_str() + sp + 1);
+										if(btn >= 0 && btn <= 2) {
+											setmousebuttonstate(0, btn, bstate);
+											response += "OK";
+										} else { response += "E01"; }
 									} else {
 										// unknown monitor command
 										response += "E01";
