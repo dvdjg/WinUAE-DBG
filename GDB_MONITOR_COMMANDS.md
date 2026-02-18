@@ -112,10 +112,24 @@ The output file format is compatible with the vscode-amiga-debug Frame Profiler 
 
 ## Usage from MCP (mcp-winuae-emu)
 
-The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, `winuae_input_event`, `winuae_input_joy`, `winuae_input_mouse`, `winuae_insert_disk`, `winuae_eject_disk`, and `winuae_profile`. When connected, insert/eject use the monitor commands for hot-swap (no restart). `winuae_profile` captures the same exhaustive frame data (DMA per scanline, blitter, CRT flow) as the vscode-amiga-debug profiler for autonomous analysis.
+The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, `winuae_input_event`, `winuae_input_joy`, `winuae_input_mouse`, `winuae_insert_disk`, `winuae_eject_disk`, `winuae_profile`, and the **graphics/audio/low-level tools** below. When connected, insert/eject use the monitor commands for hot-swap (no restart). `winuae_profile` captures the same exhaustive frame data (DMA per scanline, blitter, CRT flow) as the vscode-amiga-debug profiler for autonomous analysis.
+
+### Graphics, audio, and low-level debugging (MCP)
+
+These MCP tools use GDB memory read/write (no extra monitor commands). They allow extraction of graphics and sound from a running game and coppenheimer-style toggles:
+
+| MCP tool | Purpose |
+|----------|--------|
+| `winuae_gfx_state` | Read BPLCON0, bitplane/sprite pointers, DIW/DDF, DMACON, palette. Use to get bitmap addresses and dimensions for extraction. |
+| `winuae_audio_state` | Read Paula channels (AUD0–3: sample pointer, length, period, volume). Optional `samples_hex` to dump raw sample data from chip RAM. |
+| `winuae_bitmap_read` | Read raw bitplane data from chip RAM (address, row_bytes, height, num_planes). Decode planar→image externally. |
+| `winuae_memory_search` | Search RAM for a hex pattern (e.g. Copper lists, graphics signatures). Returns first match offset. |
+| `winuae_custom_write` | Write a 16-bit value to a custom register by name (e.g. BPLCON0, DMACON). Toggle bitplanes or sprites on/off for debugging. |
+
+Together with `winuae_custom_registers`, `winuae_copper_disassemble`, and `winuae_memory_read`/`winuae_memory_dump`, you can analyze and extract assets from binaries and inspect mechanics/timings at a low level.
 
 ## Audio, Disk, and Future Extensions
 
-- **Audio capture**: Not implemented yet. Paula audio ($DFF0A0–$DFF0D8) can be read via memory access for inspection.
+- **Audio**: Paula state and optional sample dump via MCP `winuae_audio_state` (reads $DFF0A0–$DFF0D8).
+- **Bitmap extraction**: Use `winuae_gfx_state` to get BPL pointers and dimensions, then `winuae_bitmap_read` or `winuae_memory_read` for raw planar data; decode externally. Screenshot command still captures the rendered display.
 - **Disk sectors**: Direct disk sector access is not exposed in monitor commands. Use memory-mapped floppy access or filesystem tools instead.
-- **Bitmap extraction**: Screenshot command captures the rendered display. Raw chip RAM bitmap decoding would require reading BPLCON0, BPL1PTH, etc. and decoding the bitplane format; not implemented as a monitor command.
