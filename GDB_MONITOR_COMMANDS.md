@@ -69,6 +69,19 @@ Simulate mouse button press/release.
 - **button**: 0 = left, 1 = right, 2 = middle
 - **Example**: `monitor input mouse button 0 1` (press left), `monitor input mouse button 0 0` (release)
 
+### df0 / df1 / df2 / df3 insert \<path\>
+
+Insert a disk image (ADF, ADZ, DMS, IPF, ZIP) into the given drive **without restarting** the emulator. Path is UTF-8; use host path (e.g. `C:\path\to\game.adf`).
+
+- **path**: Host path to an image file (ADF Amiga Disk File, ADZ, DMS, IPF, or ZIP). ADF is the standard Amiga format.
+- **Example**: `monitor df0 insert C:\games\game.adf`
+
+### df0 / df1 / df2 / df3 eject
+
+Eject the disk from the given drive **without restarting**.
+
+- **Example**: `monitor df0 eject`
+
 ### reset
 
 Restore the savestate at process entry. Requires `debugging_trigger` to be set in the config.
@@ -77,7 +90,16 @@ Restore the savestate at process entry. Requires `debugging_trigger` to be set i
 
 ### profile \<num_frames\> \<unwind_file\> \<out_file\>
 
-CPU profiling (advanced). Runs for N frames, uses unwind info, writes profile output.
+Frame profiler (same data as [vscode-amiga-debug](https://github.com/dvdjg/vscode-amiga-debug)): runs for N frames (1–100), optionally with an unwind table for symbol resolution, and writes a binary file containing:
+
+- CPU samples (function-level)
+- DMA records per scanline (CRT / beam position, blitter, bitplanes, sprites, etc.)
+- Custom chip registers snapshot
+- AGA color registers (if AGA)
+- Blitter/bitmap resources
+- Screenshot per frame (PNG single frame, JPG multi-frame)
+
+The output file format is compatible with the vscode-amiga-debug Frame Profiler and Graphics Debugger, so you can open it there or parse it for autonomous analysis (e.g. MCP).
 
 ## Usage from GDB
 
@@ -90,7 +112,7 @@ CPU profiling (advanced). Runs for N frames, uses unwind info, writes profile ou
 
 ## Usage from MCP (mcp-winuae-emu)
 
-The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, `winuae_input_event`, `winuae_input_joy`, and `winuae_input_mouse`.
+The MCP server calls these via `winuae_screenshot`, `winuae_disassemble_full`, `winuae_input_key`, `winuae_input_event`, `winuae_input_joy`, `winuae_input_mouse`, `winuae_insert_disk`, `winuae_eject_disk`, and `winuae_profile`. When connected, insert/eject use the monitor commands for hot-swap (no restart). `winuae_profile` captures the same exhaustive frame data (DMA per scanline, blitter, CRT flow) as the vscode-amiga-debug profiler for autonomous analysis.
 
 ## Audio, Disk, and Future Extensions
 

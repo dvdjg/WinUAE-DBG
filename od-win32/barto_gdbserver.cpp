@@ -19,6 +19,7 @@
 #include "drawing.h" // color_entry
 #include "win32.h"
 #include "savestate.h"
+#include "disk.h"
 
 extern BITMAPINFO* screenshot_get_bi();
 extern void* screenshot_get_bits();
@@ -96,6 +97,14 @@ namespace barto_gdbserver {
 		std::unique_ptr<char[]> buffer(new char[len]);
 		WideCharToMultiByte(CP_UTF8, 0, string, -1, buffer.get(), len, nullptr, nullptr);
 		return std::string(buffer.get());
+	}
+
+	static std::wstring utf8_to_wide(const std::string& utf8) {
+		if(utf8.empty()) return std::wstring();
+		int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), nullptr, 0);
+		std::wstring out(len, 0);
+		MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), (int)utf8.size(), &out[0], len);
+		return out;
 	}
 
 	static constexpr char hex[]{ "0123456789abcdef" };
@@ -811,6 +820,67 @@ namespace barto_gdbserver {
 										if(sp != std::string::npos) bstate = atoi(sb.c_str() + sp + 1);
 										if(btn >= 0 && btn <= 2) {
 											setmousebuttonstate(0, btn, bstate);
+											response += "OK";
+										} else { response += "E01"; }
+									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df0" && cmd[3] == ' ') {
+										// syntax: monitor df0 insert <path> | monitor df0 eject
+										auto rest = cmd.substr(4);
+										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+										if(rest.substr(0, 6) == "insert ") {
+											std::string path_utf8 = rest.substr(6);
+											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											std::wstring path_w = utf8_to_wide(path_utf8);
+											if(!path_w.empty()) {
+												disk_insert(0, path_w.c_str());
+												response += "OK";
+											} else { response += "E01"; }
+										} else if(rest == "eject") {
+											disk_eject(0);
+											response += "OK";
+										} else { response += "E01"; }
+									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df1" && cmd[3] == ' ') {
+										auto rest = cmd.substr(4);
+										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+										if(rest.substr(0, 6) == "insert ") {
+											std::string path_utf8 = rest.substr(6);
+											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											std::wstring path_w = utf8_to_wide(path_utf8);
+											if(!path_w.empty()) {
+												disk_insert(1, path_w.c_str());
+												response += "OK";
+											} else { response += "E01"; }
+										} else if(rest == "eject") {
+											disk_eject(1);
+											response += "OK";
+										} else { response += "E01"; }
+									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df2" && cmd[3] == ' ') {
+										auto rest = cmd.substr(4);
+										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+										if(rest.substr(0, 6) == "insert ") {
+											std::string path_utf8 = rest.substr(6);
+											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											std::wstring path_w = utf8_to_wide(path_utf8);
+											if(!path_w.empty()) {
+												disk_insert(2, path_w.c_str());
+												response += "OK";
+											} else { response += "E01"; }
+										} else if(rest == "eject") {
+											disk_eject(2);
+											response += "OK";
+										} else { response += "E01"; }
+									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df3" && cmd[3] == ' ') {
+										auto rest = cmd.substr(4);
+										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+										if(rest.substr(0, 6) == "insert ") {
+											std::string path_utf8 = rest.substr(6);
+											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											std::wstring path_w = utf8_to_wide(path_utf8);
+											if(!path_w.empty()) {
+												disk_insert(3, path_w.c_str());
+												response += "OK";
+											} else { response += "E01"; }
+										} else if(rest == "eject") {
+											disk_eject(3);
 											response += "OK";
 										} else { response += "E01"; }
 									} else {
