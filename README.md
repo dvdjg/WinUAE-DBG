@@ -1,58 +1,118 @@
+# WinUAE – Compilación en Windows
 
-# WinUAE
+## Requisitos del sistema
 
-1) Requirements: Windows 7 32-bit/64-bit or newer.
+- Windows 7 32-bit/64-bit o superior.
 
-2) Visual Studio 2017 Community with the following feature:
-	"Desktop Development with C++" with follow option:
-	-"Support Windows XP for C++"
-	-"Windows 8.1 SDK UCRT SDK"
-	-"Windows 10 SDK 10.0.17763.0"
+## Requisitos de compilación
 
-3) Download and Install the Windows Driver Kit (WDK). 16299 (1709) or newer.
-		
-	Download Link -> https://docs.microsoft.com/en-us/windows-hardware/drivers/other-wdk-downloads
-	
-4) Download the zip packages include and lib "winuaeinclibs.zip" and create the directory "c:\dev" and extract all. When finished you have "c:\dev\include" and \"c:\dev\lib" 
-	 	 
-	Download Link -> https://download.abime.net/winuae/files/b/winuaeinclibs.zip
-		
-5) Download WinUAE source packages and extract all (anywhere you want).
+### 1. Visual Studio 2022 o posterior
 
-	Download Link -> https://github.com/tonioni/WinUAE/archive/<version>.zip
-	or (preferably) use git client.
+Se recomienda **Visual Studio 2022** (o Visual Studio 2025/2026). El proyecto está configurado con el *Platform Toolset* **v143** (VS2022); en instalaciones más recientes puede usarse **v145**.
 
-6) Download the zip package aros.rom.cpp.zip and extract into WinUAE source directory.
+- **Visual Studio 2017 no es adecuado**: el código usa C++ y extensiones que requieren un compilador más reciente; la compatibilidad con C99 de VS2017 es limitada y pueden aparecer errores.
+- Instala la carga de trabajo **“Desarrollo para el escritorio con C++”**.
+- Opcional: “Soporte para C++ de Windows XP” si necesitas compatibilidad con XP.
+- Asegúrate de tener un **Windows 10 SDK** (p. ej. 10.0.17763.0 o superior) y UCRT.
 
-	Download Link -> https://download.abime.net/winuae/files/b/aros.rom.cpp.zip	
-				
-7) Download and Install Nasm (Assembler Compiler) and put it in PATH
+### 2. Windows Driver Kit (WDK)
 
-	https://www.nasm.us/
+Versión 16299 (1709) o más reciente.
 
-8) In Visual Studio click on "File"->"Open"->"Project/Solution" select the folder <source directory>\od-win32\winuae_msvc15\winuae_msvc.sln (Ignore error message "Unsupported" and click ok)
+- https://docs.microsoft.com/en-us/windows-hardware/drivers/other-wdk-downloads
 
-9) In The solution 'winuae_msvc' you can unload or delete the following projects (and all others not needed in step 12):
-	-uaeunp
-	-consolewrapper
-	-decompess
-	-fdrawcmd
-	-ipctester
-	-resourcedll
-	-singlefilehelper
-	-wix
+### 3. Librerías e includes de WinUAE
 
-10) Change to 32-bit Release mode.
+Descarga **winuaeinclibs.zip** y descomprímelo de forma que queden:
 
-11) Build following projects in following order:
-	build68k
-	genlinetoscr
-	genblitter
-	gencpu
-	gencomp
-	prowizard
-	unpackers
-		
-12) Switch to Test (debug build) or FullRelease (full optimized) and select either 32-bit or 64-bit. Compile.
+- `c:\dev\include`
+- `c:\dev\lib` (y `c:\dev\lib\x64` para compilaciones 64-bit)
 
-Finished. In "D:\Amiga\" you find winuae.exe and winuae64.exe
+Enlace: https://download.abime.net/winuae/files/b/winuaeinclibs.zip
+
+### 4. Código fuente
+
+- Clona o descarga el código (p. ej. desde GitHub).
+- Descarga **aros.rom.cpp.zip** y descomprímelo **dentro del directorio raíz del código fuente** de WinUAE.
+
+  https://download.abime.net/winuae/files/b/aros.rom.cpp.zip
+
+### 5. NASM (ensamblador)
+
+Instala NASM y asegúrate de que esté en el **PATH** del sistema (o en la sesión donde ejecutes la compilación).
+
+- https://www.nasm.us/
+
+Si NASM está en `C:\Program Files\NASM`, puedes añadirlo al PATH solo para la compilación:
+
+```powershell
+$env:PATH = "C:\Program Files\NASM;$env:PATH"
+```
+
+---
+
+## Compilación desde Visual Studio
+
+1. Abre la solución:  
+   `<directorio_fuente>\od-win32\winuae_msvc15\winuae_msvc.sln`  
+   (Si aparece un aviso de “Unsupported”, puedes aceptar y continuar.)
+
+2. **Si es la primera vez o quieres regenerar código** (build limpio), compila antes los proyectos auxiliares en **Release | Win32** y en este orden:
+   - build68k  
+   - genlinetoscr  
+   - genblitter  
+   - gencpu  
+   - gencomp  
+   - prowizard  
+   - unpackers  
+
+   (Clic derecho en cada proyecto → “Compilar”.)
+
+3. Elige la configuración final:
+   - **FullRelease** (optimizado) o **Test** (debug).
+   - Plataforma **Win32** (32-bit) o **x64** (64-bit).
+
+4. Establece el proyecto **winuae** como proyecto de inicio y compila (F7 o Compilar → Compilar solución).
+
+Los ejecutables se generan en:
+
+- `<directorio_fuente>\bin\`  
+  Por defecto el ejecutable se llama **winuae-gdb.exe** (tanto en 32 como en 64 bits; cada compilación sobrescribe la anterior si usas el mismo directorio).
+
+---
+
+## Compilación desde línea de comandos (MSBuild)
+
+Con NASM en el PATH y desde el directorio raíz del código fuente:
+
+**32-bit (FullRelease):**
+
+```powershell
+$env:PATH = "C:\Program Files\NASM;$env:PATH"   # si NASM no está en el PATH
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  "od-win32\winuae_msvc15\winuae_msvc.sln" `
+  /p:Configuration=FullRelease /p:Platform=Win32 /t:build /m
+```
+
+**64-bit (FullRelease):**
+
+```powershell
+$env:PATH = "C:\Program Files\NASM;$env:PATH"
+& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  "od-win32\winuae_msvc15\winuae_msvc.sln" `
+  /p:Configuration=FullRelease /p:Platform=x64 /t:build /m
+```
+
+Ajusta la ruta de `MSBuild.exe` si usas otra edición o versión de Visual Studio (por ejemplo, `...\2022\Professional\...` o `...\18\Community\...` para VS 2026).
+
+---
+
+## Resumen de cambios en la solución
+
+En esta rama/copia del proyecto se ha ajustado lo siguiente para facilitar la compilación con versiones recientes de Visual Studio y en distintas máquinas:
+
+- **Platform Toolset**: actualizado a **v145** cuando se usa Visual Studio 2026; con VS2022 se usa **v143** (puedes cambiar el toolset en Propiedades del proyecto si hace falta).
+- **Directorio de salida**: la salida ya no apunta a rutas fijas de otro desarrollador; se usa `$(SolutionDir)..\..\bin\`, es decir, la carpeta **bin** en la raíz del código fuente.
+- No ha sido necesario renombrar archivos `.cpp` a `.c` ni adaptar cabeceras para compilar en 32 o 64 bits.
+
+Si tras desplegar estos cambios usas **VS2022**, y el proyecto da error de toolset, en las propiedades del proyecto (todas las configuraciones) cambia *Conjunto de herramientas de la plataforma* a **v143**.
