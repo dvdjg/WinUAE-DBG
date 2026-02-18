@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "winuae-emu": {
+      "command": "node",
+      "args": [
+        "c:/Users/dvdjg/Documents/programa/AI/mcp-winuae-emu/dist/index.js"
+      ],
+      "env": {
+        "WINUAE_PATH": "c:/Users/dvdjg/Documents/programa/AI/WinUAE-DBG/bin",
+        "WINUAE_CONFIG": "c:/Users/dvdjg/Documents/programa/AI/WinUAE-DBG/bin/Configurations/A500-Dev.uae",
+        "WINUAE_GDB_PORT": "2345"
+      }
+    }
+  }
+}

@@ -1,4 +1,6 @@
-# WinUAE – Compilación en Windows
+# WinUAE-DBG – Compilación en Windows
+
+Fork de WinUAE con servidor GDB y comandos monitor extendidos para depuración remota de programas Amiga. Compatible con [mcp-winuae-emu](https://github.com/axewater/mcp-winuae-emu) (MCP server para Cursor/Claude).
 
 ## Requisitos del sistema
 
@@ -6,14 +8,14 @@
 
 ## Requisitos de compilación
 
-### 1. Visual Studio 2022 o posterior
+### 1. Visual Studio 2017, 2019, 2022 o 2026
 
-Se recomienda **Visual Studio 2022** (o Visual Studio 2025/2026). El proyecto está configurado con el *Platform Toolset* **v143** (VS2022); en instalaciones más recientes puede usarse **v145**.
+El proyecto usa *Platform Toolset* **v145** (VS2022). Compatible con VS2026, VS2022, VS2019 y VS2017.
 
-- **Visual Studio 2017 no es adecuado**: el código usa C++ y extensiones que requieren un compilador más reciente; la compatibilidad con C99 de VS2017 es limitada y pueden aparecer errores.
+- **VS2026** requiere `VCTargetsPath` (ver línea de comandos). **VS2022/2019/2017**: usar MSBuild de la ruta correspondiente.
 - Instala la carga de trabajo **“Desarrollo para el escritorio con C++”**.
 - Opcional: “Soporte para C++ de Windows XP” si necesitas compatibilidad con XP.
-- Asegúrate de tener un **Windows 10 SDK** (p. ej. 10.0.17763.0 o superior) y UCRT.
+- Instala "Desarrollo para el escritorio con C++" y un **Windows 10 SDK** (10.0.17763.0 o superior).
 
 ### 2. Windows Driver Kit (WDK)
 
@@ -85,25 +87,35 @@ Los ejecutables se generan en:
 
 Con NASM en el PATH y desde el directorio raíz del código fuente:
 
-**32-bit (FullRelease):**
+**64-bit Release (VS2026):**
 
 ```powershell
-$env:PATH = "C:\Program Files\NASM;$env:PATH"   # si NASM no está en el PATH
-& "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
-  "od-win32\winuae_msvc15\winuae_msvc.sln" `
-  /p:Configuration=FullRelease /p:Platform=Win32 /t:build /m
+$env:PATH = "C:\Program Files\NASM;$env:PATH"
+$env:VCTargetsPath = "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Microsoft\VC\v180\"
+& "C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  "od-win32\winuae_msvc15\winuae_msvc.vcxproj" `
+  /p:Configuration=Release /p:Platform=x64 /t:build /m
 ```
 
-**64-bit (FullRelease):**
+**64-bit Release (VS2022):**
 
 ```powershell
 $env:PATH = "C:\Program Files\NASM;$env:PATH"
 & "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" `
   "od-win32\winuae_msvc15\winuae_msvc.sln" `
-  /p:Configuration=FullRelease /p:Platform=x64 /t:build /m
+  /p:Configuration=Release /p:Platform=x64 /t:build /m
 ```
 
-Ajusta la ruta de `MSBuild.exe` si usas otra edición o versión de Visual Studio (por ejemplo, `...\2022\Professional\...` o `...\18\Community\...` para VS 2026).
+**64-bit Release (VS2019):**
+
+```powershell
+$env:PATH = "C:\Program Files\NASM;$env:PATH"
+& "C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\MSBuild\Current\Bin\MSBuild.exe" `
+  "od-win32\winuae_msvc15\winuae_msvc.sln" `
+  /p:Configuration=Release /p:Platform=x64 /t:build /m
+```
+
+Ajusta la ruta de `MSBuild.exe` según tu instalación (Community/Professional/Enterprise/BuildTools).
 
 ---
 
@@ -126,7 +138,23 @@ El ejecutable **winuae-gdb.exe** incluye un servidor GDB (puerto 2345) para depu
 - **screenshot** – capturar la pantalla a PNG
 - **disasm** – desensamblar m68k en una dirección
 - **input key/event** – simular teclado (scancodes o event IDs)
+- **input joy** – simular joystick/gamepad (direcciones y botones)
+- **input mouse** – simular ratón (movimiento relativo/absoluto y botones)
 - **reset** – restaurar savestate en la entrada del proceso
 - **profile** – perfilado de CPU (avanzado)
 
-Ver [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) para detalles y ejemplos. Para usar con MCP (mcp-winuae-emu), apunta `WINUAE_PATH` al directorio donde está `winuae-gdb.exe`.
+Ver [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) para detalles y ejemplos.
+
+---
+
+## MCP (mcp-winuae-emu)
+
+Para depurar Amiga desde Cursor o Claude mediante MCP:
+
+1. **Compila** WinUAE-DBG y obtén `bin\winuae-gdb.exe`.
+2. **Clona** [mcp-winuae-emu](https://github.com/axewater/mcp-winuae-emu) en un directorio hermano (p. ej. `AI\mcp-winuae-emu` junto a `AI\WinUAE-DBG`).
+3. **Construye** el MCP: `cd mcp-winuae-emu && npm install && npm run build`.
+4. **Configura** el MCP en Cursor: el proyecto incluye `.cursor/mcp.json`. Edita las rutas en `args` (path al MCP) y en `env` (`WINUAE_PATH`, `WINUAE_CONFIG`) según tu instalación.
+5. **Reinicia** Cursor para cargar el servidor MCP.
+
+El MCP expone herramientas como `winuae_connect`, `winuae_load`, `winuae_screenshot`, `winuae_input_key`, `winuae_input_joy`, `winuae_input_mouse`, etc.
