@@ -76,14 +76,41 @@ $env:PATH = "C:\Program Files\NASM;$env:PATH"
 
 4. Establece el proyecto **winuae** como proyecto de inicio y compila (F7 o Compilar → Compilar solución).
 
-Los ejecutables se generan en:
+Los ejecutables se generan en `<directorio_fuente>\bin\`:
 
-- `<directorio_fuente>\bin\`  
-  Por defecto el ejecutable se llama **winuae-gdb.exe** (tanto en 32 como en 64 bits; cada compilación sobrescribe la anterior si usas el mismo directorio).
+- **winuae-gdb.exe** – versión 64-bit (recomendada)
+- **winuae-gdb-x86.exe** – versión 32-bit (sufijo para distinguirla)
 
 ---
 
-## Compilación desde línea de comandos (MSBuild)
+## Script de compilación (recomendado)
+
+El proyecto incluye **`build.bat`** en la raíz para compilar desde línea de comandos sin abrir Visual Studio:
+
+```batch
+./build.bat         :: Compila x64 Release (por defecto, recomendado)
+./build.bat win32   :: Compila Win32 Release
+```
+
+Requisitos:
+
+- **NASM** en `C:\Program Files\NASM` o en el PATH.
+- **Visual Studio 18** (VS 2026) en `C:\Program Files\Microsoft Visual Studio\18\Community`.
+
+Si usas otra instalación (VS 2022, 2019, etc.), define la variable antes de ejecutar:
+
+```batch
+set VS_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
+build.bat
+```
+
+(Con VS 2022/2019 puede que debas cambiar el *Platform Toolset* del proyecto a **v143** o **v142**.)
+
+El script llama a `vcvarsall.bat` (x64 o x86) para configurar el entorno y luego MSBuild. Salida: **winuae-gdb.exe** (x64) o **winuae-gdb-x86.exe** (32 bits). Tras una compilación correcta, el target **CopyToAmigaDebug** copia el ejecutable a `bin\win64` o `bin\win32` de la extensión amiga-debug.
+
+---
+
+## Compilación manual con MSBuild
 
 Con NASM en el PATH y desde el directorio raíz del código fuente:
 
@@ -128,6 +155,25 @@ En esta rama/copia del proyecto se ha ajustado lo siguiente para facilitar la co
 - No ha sido necesario renombrar archivos `.cpp` a `.c` ni adaptar cabeceras para compilar en 32 o 64 bits.
 
 Si tras desplegar estos cambios usas **VS2022**, y el proyecto da error de toolset, en las propiedades del proyecto (todas las configuraciones) cambia *Conjunto de herramientas de la plataforma* a **v143**.
+
+---
+
+## Qué puedes desinstalar (para liberar espacio)
+
+Para compilar WinUAE-DBG solo necesitas **una** instalación de Visual Studio. El script `build.bat` usa **VS 18 (2026)** por defecto.
+
+| Componente | Mantener | Se puede desinstalar |
+|------------|----------|----------------------|
+| **Visual Studio** | VS 18 (Community) | VS 2017, VS 2019, VS 2022 BuildTools |
+| **Windows SDK** | Windows 10 SDK (10.x) dentro de VS 18 | SDKs antiguos: v7.1A, v10.0A en `Microsoft SDKs\Windows` |
+| **Windows Kits** | Windows 10 Kit (10.x) | Windows 8.1 Kit, NETFXSDK (si no desarrollas .NET) |
+| **WDK** | Una versión reciente (ej. 10.x) | Versiones antiguas (16299, 8.1, etc.) si no compilas drivers |
+
+Pasos para desinstalar:
+
+1. **Panel de control** → Programas y características → Desinstalar un programa.
+2. Busca "Visual Studio 2017", "Visual Studio 2019", "Build Tools para Visual Studio 2022" y desinstala los que no uses.
+3. Para SDK/WDK: usa el **Instalador de Visual Studio** → Modificar tu instalación de VS 18 → pestaña "Componentes individuales" para ver/desmarcar SDKs concretos. O desinstala "Windows Software Development Kit" / "Windows Driver Kit" antiguos desde Programas y características.
 
 ---
 

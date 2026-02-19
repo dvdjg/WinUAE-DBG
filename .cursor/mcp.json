@@ -7,7 +7,7 @@
       ],
       "env": {
         "WINUAE_PATH": "c:/Users/dvdjg/Documents/programa/AI/WinUAE-DBG/bin",
-        "WINUAE_CONFIG": "c:/Users/dvdjg/Documents/programa/AI/WinUAE-DBG/bin/Configurations/A500-Dev.uae",
+        "WINUAE_CONFIG": "C:/Amiga/A500-Dev.uae",
         "WINUAE_GDB_PORT": "2345"
       }
     }

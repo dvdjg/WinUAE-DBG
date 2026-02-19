@@ -1,5 +1,5 @@
-
 ; 64-bit assembly functions for native 80-bit FPU emulation
+default rel
 
 global xfp_int
 global xfp_mov
