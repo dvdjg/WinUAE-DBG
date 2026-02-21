@@ -994,7 +994,7 @@ namespace barto_gdbserver {
 												bpn.type = BREAKPOINT_REG_PC;
 												bpn.oper = BREAKPOINT_CMP_EQUAL;
 												bpn.enabled = 1;
-												trace_mode = 0;
+												trace_mode = TRACE_CHECKONLY;
 												print_breakpoints();
 												response += "OK";
 												break;
@@ -1014,6 +1014,8 @@ namespace barto_gdbserver {
 												if(bpn.enabled && bpn.value1 == adr) {
 													bpn.enabled = 0;
 													trace_mode = 0;
+													for(const auto& bp : bpnodes)
+														if(bp.enabled) { trace_mode = TRACE_CHECKONLY; break; }
 													print_breakpoints();
 													response += "OK";
 													break;
@@ -1164,6 +1166,19 @@ namespace barto_gdbserver {
 	void vsync_pre() {
 		if(!(currprefs.debugging_features & (1 << 2))) // "gdbserver"
 			return;
+
+		// MCP-WINUAE-EMU EXTENSION: Auto-activate debugger when GDB client connects
+		// This allows games loaded from ADF to be debugged without a debugging_trigger
+		if(debugger_state == state::inited && is_connected()) {
+			barto_log("GDBSERVER: Client connected, activating debugger for MCP mode\n");
+			useAck = true;
+			debugger_state = state::debugging;
+			debugmem_trace = true;
+			// Set up for generic debugging (no specific process)
+			baseText = 0;
+			sizeText = 0x7fff'ffff;
+			activate_debugger();
+		}
 
 		static uae_u32 profile_start_cycles{};
 		static size_t profile_custom_regs_size{};
@@ -1562,6 +1577,29 @@ start_profile:
 		if(debugger_state == state::connected) {
 //while(!IsDebuggerPresent()) Sleep(100); __debugbreak();
 			auto pc = munge24(m68k_getpc());
+			// Compute load offset for relocation: ELF is at 0x400, LoadSeg puts code at baseText
+			if(!baseText && processname) {
+				auto BADDR = [](uaecptr bptr) { return (uaecptr)((uint32_t)bptr << 2); };
+				auto execbase = get_long_debug(4);
+				auto ThisTask = get_long_debug(execbase + 276);
+				if(ThisTask && get_byte_debug(ThisTask + 8) == 13) {
+					uaecptr segList = 0;
+					auto pr_CLI = BADDR(get_long_debug(ThisTask + 172));
+					if(pr_CLI)
+						segList = BADDR(get_long_debug(pr_CLI + 60));
+					else {
+						auto pr_SegList = BADDR(get_long_debug(ThisTask + 128));
+						if(pr_SegList)
+							segList = BADDR(get_long_debug(pr_SegList + 12));
+					}
+					if(segList) {
+						baseText = segList + 4;
+						sizeText = get_long_debug(segList - 4) - 4;
+						barto_log("GDBSERVER: baseText=0x%x (load offset 0x%x)\n", baseText, baseText - 0x400);
+					}
+				}
+			}
+			uaecptr loadOffset = (baseText >= 0x400) ? (baseText - 0x400) : 0;
 			if (pc == KPutCharX) {
 				// if this is too slow, hook uaelib trap#86
 				auto ascii = static_cast<uint8_t>(m68k_dreg(regs, 0));
@@ -1607,7 +1645,8 @@ start_profile:
 				}
 			}
 			for(const auto& bpn : bpnodes) {
-				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpn.value1 == pc) {
+				uaecptr bpAddr = bpn.value1 + loadOffset; // relocate ELF addr to actual load addr
+				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpAddr == pc) {
 					// see binutils-gdb/include/gdb/signals.def for number of signals
 					if(pc == Trap7) {
 						response = "S07"; // TRAP#7 -> SIGEMT

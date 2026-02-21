@@ -178,12 +178,12 @@
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='FullRelease|ARM64EC'">false</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='FullRelease|x64'">true</GenerateManifest>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='FullRelease|ARM64EC'">true</GenerateManifest>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='FullRelease|x64'">winuae-gdb</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='FullRelease|ARM64EC'">winuae-gdb</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">winuae-gdb</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='FullRelease|x64'">winuae-gdb-x64</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='FullRelease|ARM64EC'">winuae-gdb-x64</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">winuae-gdb-x64</TargetName>
     <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|ARM64EC'">winuae-gdb_arm64</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Test|x64'">winuae-gdb</TargetName>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Test|ARM64EC'">winuae-gdb</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Test|x64'">winuae-gdb-x64</TargetName>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Test|ARM64EC'">winuae-gdb-x64</TargetName>
     <IncludePath Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(MSBuildProgramFiles32)\Windows Kits\10\Include\10.0.18362.0\km;c:\dev\include;$(IncludePath)</IncludePath>
     <IncludePath Condition="'$(Configuration)|$(Platform)'=='Test|Win32'">$(MSBuildProgramFiles32)\Windows Kits\10\Include\10.0.18362.0\km;c:\dev\include;$(IncludePath)</IncludePath>
     <LibraryPath Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">C:\dev\lib;$(LibraryPath)</LibraryPath>
@@ -219,17 +219,17 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Test|Win32'">
     <ExecutablePath>c:\dev\bin;$(MSBuildProgramFiles32)\Windows Kits\10\bin\10.0.17763.0\x86;$(ExecutablePath)</ExecutablePath>
     <ExcludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(MSBuild_ExecutablePath);$(VC_LibraryPath_x86);</ExcludePath>
-    <TargetName>winuae-gdb-x86</TargetName>
+    <TargetName>winuae-gdb</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ExecutablePath>c:\dev\bin;$(MSBuildProgramFiles32)\Windows Kits\10\bin\10.0.17763.0\x86;$(ExecutablePath)</ExecutablePath>
     <ExcludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(MSBuild_ExecutablePath);$(VC_LibraryPath_x86);</ExcludePath>
-    <TargetName>winuae-gdb-x86</TargetName>
+    <TargetName>winuae-gdb</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='FullRelease|Win32'">
     <ExecutablePath>c:\dev\bin;$(MSBuildProgramFiles32)\Windows Kits\10\bin\10.0.17763.0\x86;$(ExecutablePath)</ExecutablePath>
     <ExcludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(MSBuild_ExecutablePath);$(VC_LibraryPath_x86);</ExcludePath>
-    <TargetName>winuae-gdb-x86</TargetName>
+    <TargetName>winuae-gdb</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='FullRelease|x64'">
     <ExecutablePath>c:\dev\bin;$(MSBuildProgramFiles32)\Windows Kits\10\bin\10.0.17763.0\x64;$(ExecutablePath)</ExecutablePath>
@@ -1966,7 +1966,7 @@
     <AmigaDebugBinFolder Condition="'$(Platform)'=='x64'">win64</AmigaDebugBinFolder>
   </PropertyGroup>
   <Target Name="CopyToAmigaDebug" AfterTargets="Build">
-    <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFolder="C:\Users\dvdjg\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!=''" />
+    <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="C:\Users\dvdjg\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!=''" />
     <Message Importance="high" Text="Copied $(TargetName)$(TargetExt) to amiga-debug extension bin\$(AmigaDebugBinFolder)" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!=''" />
   </Target>
   <ImportGroup Label="ExtensionTargets">

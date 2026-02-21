@@ -18,12 +18,12 @@ if not exist "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" (
   exit /b 1
 )
 
-REM Plataforma: x64 por defecto (recomendado), Win32 si se pasa como argumento
-set "PLAT=x64"
-set "VCVARS_ARCH=x64"
-if /i "%1"=="win32" (
-  set "PLAT=Win32"
-  set "VCVARS_ARCH=x86"
+REM Plataforma: Win32 (32-bit) por defecto, x64 si se pasa como argumento
+set "PLAT=Win32"
+set "VCVARS_ARCH=x86"
+if /i "%1"=="x64" (
+  set "PLAT=x64"
+  set "VCVARS_ARCH=x64"
 )
 
 echo Compilando WinUAE-DBG %PLAT% Release...
@@ -41,7 +41,7 @@ set "VCTargetsPath=%VS_PATH%\MSBuild\Microsoft\VC\v180\"
 set "BUILD_EXIT=%errorlevel%"
 if %BUILD_EXIT% equ 0 (
   echo.
-  echo Compilacion OK. Ejecutable: bin\winuae-gdb.exe para x64, bin\winuae-gdb-x86.exe para Win32
+  echo Compilacion OK. Ejecutable: bin\winuae-gdb.exe para Win32 (32-bit por defecto), bin\winuae-gdb-x64.exe para x64
   echo Copiado a amiga-debug extension si el target CopyToAmigaDebug se ejecuto.
 ) else (
   echo Compilacion fallida.
