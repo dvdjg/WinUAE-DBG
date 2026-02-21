@@ -121,6 +121,14 @@ namespace barto_gdbserver {
 		return ret;
 	}
 
+	// MCP-WINUAE-EMU EXTENSION: Convert hex character to int (-1 if invalid)
+	static int hex_to_int(char c) {
+		if(c >= '0' && c <= '9') return c - '0';
+		if(c >= 'a' && c <= 'f') return c - 'a' + 10;
+		if(c >= 'A' && c <= 'F') return c - 'A' + 10;
+		return -1;
+	}
+
 	static std::string from_hex(const std::string& s) {
 		std::string ret;
 		for(size_t i = 0, len = s.length() & ~1; i < len; i += 2) {
@@ -419,6 +427,41 @@ namespace barto_gdbserver {
 		for(int reg = 0; reg < 18; reg++)
 			ret += get_register(reg);
 		return ret;
+	}
+
+	// MCP-WINUAE-EMU EXTENSION: Write individual register
+	static bool set_register(int reg, uint32_t value) {
+		barto_log("GDBSERVER: set_register(%d, 0x%x)\n", reg, value);
+		switch(reg) {
+		case SR:
+			regs.sr = value & 0xFFFF;
+			MakeFromSR();
+			break;
+		case PC:
+			m68k_setpc(value);
+			break;
+		case D0: case D1: case D2: case D3: case D4: case D5: case D6: case D7:
+			m68k_dreg(regs, reg - D0) = value;
+			break;
+		case A0: case A1: case A2: case A3: case A4: case A5: case A6: case A7:
+			m68k_areg(regs, reg - A0) = value;
+			break;
+		default:
+			return false;
+		}
+		return true;
+	}
+
+	// MCP-WINUAE-EMU EXTENSION: Write all registers from hex string
+	static bool set_registers(const std::string& hex_data) {
+		if(hex_data.length() < 18 * 8)
+			return false;
+		for(int reg = 0; reg < 18; reg++) {
+			uint32_t value = strtoul(hex_data.substr(reg * 8, 8).c_str(), nullptr, 16);
+			if(!set_register(reg, value))
+				return false;
+		}
+		return true;
 	}
 
 	void print_breakpoints() {
@@ -824,12 +867,17 @@ namespace barto_gdbserver {
 										} else { response += "E01"; }
 									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df0" && cmd[3] == ' ') {
 										// syntax: monitor df0 insert <path> | monitor df0 eject
+										// MCP-WINUAE-EMU: paths can be quoted to handle spaces
 										auto rest = cmd.substr(4);
 										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
-										if(rest.substr(0, 6) == "insert ") {
-											std::string path_utf8 = rest.substr(6);
+										if(rest.substr(0, 7) == "insert ") {
+											std::string path_utf8 = rest.substr(7);
 											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											// Strip quotes if present
+											if(path_utf8.size() >= 2 && path_utf8.front() == '"' && path_utf8.back() == '"')
+												path_utf8 = path_utf8.substr(1, path_utf8.size() - 2);
 											std::wstring path_w = utf8_to_wide(path_utf8);
+											barto_log("GDBSERVER: df0 insert '%s'\n", path_utf8.c_str());
 											if(!path_w.empty()) {
 												disk_insert(0, path_w.c_str());
 												response += "OK";
@@ -841,9 +889,11 @@ namespace barto_gdbserver {
 									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df1" && cmd[3] == ' ') {
 										auto rest = cmd.substr(4);
 										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
-										if(rest.substr(0, 6) == "insert ") {
-											std::string path_utf8 = rest.substr(6);
+										if(rest.substr(0, 7) == "insert ") {
+											std::string path_utf8 = rest.substr(7);
 											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											if(path_utf8.size() >= 2 && path_utf8.front() == '"' && path_utf8.back() == '"')
+												path_utf8 = path_utf8.substr(1, path_utf8.size() - 2);
 											std::wstring path_w = utf8_to_wide(path_utf8);
 											if(!path_w.empty()) {
 												disk_insert(1, path_w.c_str());
@@ -856,9 +906,11 @@ namespace barto_gdbserver {
 									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df2" && cmd[3] == ' ') {
 										auto rest = cmd.substr(4);
 										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
-										if(rest.substr(0, 6) == "insert ") {
-											std::string path_utf8 = rest.substr(6);
+										if(rest.substr(0, 7) == "insert ") {
+											std::string path_utf8 = rest.substr(7);
 											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											if(path_utf8.size() >= 2 && path_utf8.front() == '"' && path_utf8.back() == '"')
+												path_utf8 = path_utf8.substr(1, path_utf8.size() - 2);
 											std::wstring path_w = utf8_to_wide(path_utf8);
 											if(!path_w.empty()) {
 												disk_insert(2, path_w.c_str());
@@ -871,9 +923,11 @@ namespace barto_gdbserver {
 									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df3" && cmd[3] == ' ') {
 										auto rest = cmd.substr(4);
 										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
-										if(rest.substr(0, 6) == "insert ") {
-											std::string path_utf8 = rest.substr(6);
+										if(rest.substr(0, 7) == "insert ") {
+											std::string path_utf8 = rest.substr(7);
 											while(!path_utf8.empty() && path_utf8[0] == ' ') path_utf8 = path_utf8.substr(1);
+											if(path_utf8.size() >= 2 && path_utf8.front() == '"' && path_utf8.back() == '"')
+												path_utf8 = path_utf8.substr(1, path_utf8.size() - 2);
 											std::wstring path_w = utf8_to_wide(path_utf8);
 											if(!path_w.empty()) {
 												disk_insert(3, path_w.c_str());
@@ -883,6 +937,24 @@ namespace barto_gdbserver {
 											disk_eject(3);
 											response += "OK";
 										} else { response += "E01"; }
+									} else if(cmd.substr(0, strlen("warp")) == "warp") {
+										// MCP-WINUAE-EMU EXTENSION: Warp/turbo mode control
+										// syntax: monitor warp <0|1|on|off|status>
+										auto s = cmd.substr(strlen("warp"));
+										while(!s.empty() && s[0] == ' ') s = s.substr(1);
+										if(s.empty() || s == "status") {
+											char info[64];
+											snprintf(info, sizeof(info), "warp=%d", currprefs.turbo_emulation ? 1 : 0);
+											response += to_hex(std::string(info));
+										} else if(s == "1" || s == "on") {
+											warpmode(1);
+											response += "OK";
+										} else if(s == "0" || s == "off") {
+											warpmode(0);
+											response += "OK";
+										} else {
+											response += "E01";
+										}
 									} else {
 										// unknown monitor command
 										response += "E01";
@@ -1084,8 +1156,52 @@ namespace barto_gdbserver {
 										response += "E01";
 								} else if(request[0] == 'g') { // get registers
 									response += get_registers();
+								} else if(request[0] == 'G') { // MCP-WINUAE-EMU: write all registers
+									if(set_registers(request.substr(1)))
+										response += "OK";
+									else
+										response += "E01";
 								} else if(request[0] == 'p') { // get register
 									response += get_register(strtoul(request.data() + 1, nullptr, 16));
+								} else if(request[0] == 'P') { // MCP-WINUAE-EMU: write single register
+									auto eq = request.find('=');
+									if(eq != std::string::npos) {
+										int reg = strtoul(request.data() + 1, nullptr, 16);
+										uint32_t value = strtoul(request.data() + eq + 1, nullptr, 16);
+										if(set_register(reg, value))
+											response += "OK";
+										else
+											response += "E01";
+									} else
+										response += "E01";
+								} else if(request[0] == 'M') { // MCP-WINUAE-EMU: write memory
+									auto comma = request.find(',');
+									auto colon = request.find(':');
+									if(comma != std::string::npos && colon != std::string::npos) {
+										uaecptr adr = strtoul(request.data() + 1, nullptr, 16);
+										int len = strtoul(request.data() + comma + 1, nullptr, 16);
+										std::string hex_data = request.substr(colon + 1);
+										barto_log("GDBSERVER: write 0x%x bytes at 0x%x\n", len, adr);
+										bool ok = true;
+										for(int i = 0; i < len && i * 2 + 1 < hex_data.length(); i++) {
+											int hi = hex_to_int(hex_data[i * 2]);
+											int lo = hex_to_int(hex_data[i * 2 + 1]);
+											if(hi < 0 || lo < 0) {
+												ok = false;
+												break;
+											}
+											uae_u8 byte = (hi << 4) | lo;
+											addrbank* ad = &get_mem_bank(adr + i);
+											if(ad) {
+												ad->bput(adr + i, byte);
+											} else {
+												ok = false;
+												break;
+											}
+										}
+										response += ok ? "OK" : "E01";
+									} else
+										response += "E01";
 								} else if(request[0] == 'm') { // read memory
 									auto comma = request.find(',');
 									if(comma != std::string::npos) {
