@@ -997,6 +997,12 @@ namespace barto_gdbserver {
 
 											exception_debugging = 1;
 											debugger_state = state::connected;
+											
+											// MCP-WINUAE-EMU FIX: Must deactivate debugger to let emulation continue
+											// but preserve exception_debugging for trace to work
+											deactivate_debugger();
+											exception_debugging = 1;
+											
 											send_ack(ack);
 											return;
 										} else if(action == "c") { // continue
@@ -1018,6 +1024,11 @@ namespace barto_gdbserver {
 												trace_param[0] = start;
 												trace_param[1] = end;
 												debugger_state = state::connected;
+												
+												// MCP-WINUAE-EMU FIX: Must deactivate debugger to let emulation continue
+												deactivate_debugger();
+												exception_debugging = 1;
+												
 												send_ack(ack);
 												return;
 											}
