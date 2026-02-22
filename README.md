@@ -2,6 +2,8 @@
 
 Fork de WinUAE con servidor GDB y comandos monitor extendidos para depuración remota de programas Amiga. Compatible con [mcp-winuae-emu](https://github.com/axewater/mcp-winuae-emu) (MCP server para Cursor/Claude).
 
+**Documentación del proyecto:** para no perder el contexto de todo lo hecho desde el clon (bugs corregidos, build.bat, logs, upstream), ver **[docs/HISTORIAL-CAMBIOS.md](docs/HISTORIAL-CAMBIOS.md)**.
+
 ## Requisitos del sistema
 
 - Windows 7 32-bit/64-bit o superior.
@@ -174,6 +176,15 @@ Pasos para desinstalar:
 1. **Panel de control** → Programas y características → Desinstalar un programa.
 2. Busca "Visual Studio 2017", "Visual Studio 2019", "Build Tools para Visual Studio 2022" y desinstala los que no uses.
 3. Para SDK/WDK: usa el **Instalador de Visual Studio** → Modificar tu instalación de VS 18 → pestaña "Componentes individuales" para ver/desmarcar SDKs concretos. O desinstala "Windows Software Development Kit" / "Windows Driver Kit" antiguos desde Programas y características.
+
+---
+
+## Documentación
+
+| Documento | Contenido |
+|----------|-----------|
+| [docs/HISTORIAL-CAMBIOS.md](docs/HISTORIAL-CAMBIOS.md) | Historial de cambios desde el clon: commits, bug de breakpoints, logs de diagnóstico, build.bat, MCP. |
+| [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) | Comandos monitor GDB (screenshot, disasm, input, reset, etc.). |
 
 ---
 

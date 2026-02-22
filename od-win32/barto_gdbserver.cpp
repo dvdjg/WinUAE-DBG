@@ -223,6 +223,22 @@ namespace barto_gdbserver {
 	int profile_frame_count{};
 	std::unique_ptr<cpu_profiler_unwind[]> profile_unwind{};
 
+	// FIX: Save trigger processname locally because deactivate_debugger() clears the global
+	std::string saved_processname;
+
+	// Helper: call deactivate_debugger() but preserve processname for GDB server
+	void deactivate_debugger_preserve_processname() {
+		// Save processname before deactivate clears it
+		if(processname && saved_processname.empty()) {
+			saved_processname = processname;
+		}
+		deactivate_debugger();
+		// Restore processname (use _strdup for char* strings)
+		if(!saved_processname.empty() && !processname) {
+			processname = _strdup(saved_processname.c_str());
+		}
+	}
+
 	enum class state {
 		inited,
 		connected,
@@ -350,6 +366,8 @@ namespace barto_gdbserver {
 				processname = nullptr;
 				processname = ua(currprefs.debugging_trigger);
 				trace_mode = TRACE_CHECKONLY;
+				barto_log("GDBSERVER: DEBUG state::inited - debugging_trigger='%s', processname set to '%s'\n", 
+					currprefs.debugging_trigger, processname ? processname : "(null)");
 			} else {
 				// savestate debugging
 				baseText = 0;
@@ -1000,14 +1018,14 @@ namespace barto_gdbserver {
 											
 											// MCP-WINUAE-EMU FIX: Must deactivate debugger to let emulation continue
 											// but preserve exception_debugging for trace to work
-											deactivate_debugger();
+											deactivate_debugger_preserve_processname();
 											exception_debugging = 1;
 											
 											send_ack(ack);
 											return;
 										} else if(action == "c") { // continue
 											debugger_state = state::connected;
-											deactivate_debugger();
+											deactivate_debugger_preserve_processname();
 											// none work...
 											//SetWindowPos(AMonitors[0].hAmigaWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE); // bring window to top
 											//BringWindowToTop(AMonitors[0].hAmigaWnd);
@@ -1026,7 +1044,7 @@ namespace barto_gdbserver {
 												debugger_state = state::connected;
 												
 												// MCP-WINUAE-EMU FIX: Must deactivate debugger to let emulation continue
-												deactivate_debugger();
+												deactivate_debugger_preserve_processname();
 												exception_debugging = 1;
 												
 												send_ack(ack);
@@ -1063,6 +1081,8 @@ namespace barto_gdbserver {
 									auto comma = request.find(',', strlen("Z0"));
 									if(comma != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
+										barto_log("GDBSERVER: DEBUG Z0 (set breakpoint) request: addr=0x%x, baseText=0x%x, loadOffset=0x%x\n",
+											adr, baseText, (baseText >= 0x400) ? (baseText - 0x400) : 0);
 										if(adr == 0xffffffff) {
 											// step out of kickstart
 											trace_mode = TRACE_RANGE_PC;
@@ -1078,6 +1098,7 @@ namespace barto_gdbserver {
 												bpn.oper = BREAKPOINT_CMP_EQUAL;
 												bpn.enabled = 1;
 												trace_mode = TRACE_CHECKONLY;
+												barto_log("GDBSERVER: DEBUG Breakpoint set: value1=0x%x (ELF addr)\n", adr);
 												print_breakpoints();
 												response += "OK";
 												break;
@@ -1682,10 +1703,15 @@ start_profile:
 				debug_illegal = 1;
 				debug_illegal_mask = (1 << 3) || (1 << 4); // 3 = address error, 4 = illegal instruction
 
-				// from debug.cpp@process_breakpoint()
-				processptr = 0;
-				xfree(processname);
-				processname = nullptr;
+				// BUG FIX: Do NOT reset processname here - it's needed for baseText calculation
+				// in state::connected handler. The original code incorrectly copied lines from
+				// debug.cpp@process_breakpoint() which clears processname, but that function is
+				// for interactive debugger commands, not for GDB server initialization.
+				// processptr = 0;           // REMOVED
+				// xfree(processname);       // REMOVED  
+				// processname = nullptr;    // REMOVED - this prevented baseText calculation!
+				barto_log("GDBSERVER: DEBUG Trigger detected! Saving state. processname='%s' (should NOT be null)\n",
+					processname ? processname : "(null)");
 				savestate_quick(0, 1); // save state for "monitor reset"
 			}
 			barto_log("GDBSERVER: Waiting for connection...\n");
@@ -1704,6 +1730,8 @@ start_profile:
 		if(debugger_state == state::connected) {
 //while(!IsDebuggerPresent()) Sleep(100); __debugbreak();
 			auto pc = munge24(m68k_getpc());
+			barto_log("GDBSERVER: DEBUG state::connected PC=0x%x baseText=0x%x processname=%s\n", 
+				pc, baseText, processname ? processname : "(null)");
 			// Compute load offset for relocation: ELF is at 0x400, LoadSeg puts code at baseText
 			if(!baseText && processname) {
 				auto BADDR = [](uaecptr bptr) { return (uaecptr)((uint32_t)bptr << 2); };
@@ -1773,6 +1801,10 @@ start_profile:
 			}
 			for(const auto& bpn : bpnodes) {
 				uaecptr bpAddr = bpn.value1 + loadOffset; // relocate ELF addr to actual load addr
+				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC) {
+					barto_log("GDBSERVER: DEBUG BP check: bpn.value1=0x%x + loadOffset=0x%x = bpAddr=0x%x, PC=0x%x, match=%d\n",
+						bpn.value1, loadOffset, bpAddr, pc, (bpAddr == pc));
+				}
 				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpAddr == pc) {
 					// see binutils-gdb/include/gdb/signals.def for number of signals
 					if(pc == Trap7) {
