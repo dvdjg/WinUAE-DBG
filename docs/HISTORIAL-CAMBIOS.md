@@ -1,169 +1,314 @@
-# Historial de cambios – WinUAE-DBG
+# Historial de Cambios en el Sistema de Depuración
 
-Documentación de todo lo que se ha hecho en este proyecto desde que se clonó/ bifurcó desde el upstream, para no olvidar el contexto ni las correcciones aplicadas.
-
----
-
-## Origen del proyecto
-
-- **Upstream:** [BartmanAbyss/WinUAE](https://github.com/BartmanAbyss/WinUAE) (fork de WinUAE con servidor GDB para depuración Amiga).
-- **Extensión VS Code:** [BartmanAbyss/vscode-amiga-debug](https://github.com/BartmanAbyss/vscode-amiga-debug) (release 1.7.9 usa GDB 17 y GCC 14.2).
-- Este repositorio (WinUAE-DBG) es un fork/clon donde se han añadido:
-  - Comandos monitor GDB extendidos (screenshot, disasm, input, disco, etc.).
-  - Integración con [mcp-winuae-emu](https://github.com/axewater/mcp-winuae-emu) (MCP para Cursor/Claude).
-  - Corrección del bug de breakpoints que impedía que los breakpoints funcionaran con programas relocalizados por LoadSeg.
-  - Script de compilación `build.bat` y documentación de compilación.
+Este documento registra todos los cambios realizados a los componentes del sistema de depuración Amiga desde el estado original de Bartman.
 
 ---
 
-## Resumen de commits locales (respecto a upstream)
+## Estado Original (Extensión Bartman v1.7.9)
 
-Hay **13 commits** por delante de `upstream/master`. Resumen por temas:
+### WinUAE-DBG Original
 
-| Commit      | Descripción breve |
-|------------|--------------------|
-| `57570aea` | **Fix MCP:** desactivar debugger durante emulación y restaurar `exception_debugging` para single-step/continue. |
-| `3a0f920d` | Extensiones MCP: manipulación de registros y control de warp mode. |
-| `3027b281` | Refactor de `build.bat` (plataforma Win32/x64) y mejoras en el servidor GDB. |
-| `125a93c7` | **Añadido `build.bat`** para compilación por línea de comandos y actualización del README. |
-| `daeffa38` | Simplificación: eliminación de herramientas proxy. |
-| `7790d039` | Comandos monitor: gráficos, audio y depuración de bajo nivel. |
-| `1dd84f2e` | Comandos de gestión de imágenes de disco (insertar/extraer) vía GDB. |
-| `fa3815b2` | README y configuración MCP para WinUAE-DBG. |
-| `7a419c32` | Configuración de VS Code para C/C++. |
-| `7a7daf01` | Comandos de joystick y ratón en el servidor GDB. |
-| `4643374d` | Comandos monitor GDB para depuración mejorada. |
-| `3e719eef` | README y proyectos para compatibilidad con VS 2022. |
-| `fa28ff85` | Comandos monitor `screenshot` y `disasm`. |
+El código original de `barto_gdbserver.cpp` manejaba:
 
-Más atrás en el historial hay merges de upstream y correcciones de gráficos/sonido (resolución, HAM/sprite, etc.).
+```cpp
+// Handler qOffsets original
+} else if(request.substr(0, 8) == "qOffsets") {
+    std::string response;
+    for(int i = 0; i < numSections; i++) {
+        if(!response.empty())
+            response += ';';
+        char hex[32];
+        sprintf(hex, "%x", sectionBases[i]);
+        response += hex;
+    }
+    SendPacket(response);
+    
+    // baseText se calculaba aquí
+    baseText = sectionBases[0];  // Asumiendo CODE es primero
+}
 
----
+// Handler Z0 original
+} else if(request.substr(0, 2) == "Z0") {
+    uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
+    // Sin relocalización - usaba dirección tal cual llegaba
+    bpn.value1 = adr;
+}
+```
 
-## Bug crítico: breakpoints no se detenían
+### VS Code Extension Original
 
-### Síntoma
+**mi2.ts original**:
+- Obtenía secciones con `info file`
+- NO consultaba `qOffsets`
+- Emitía secciones sin loadOffset
 
-Al depurar con la extensión amiga-debug (F5), el programa no se detenía en los breakpoints puestos en el código C (p. ej. `main.c:15`).
+**symbols.ts original**:
+- `relocate(sections)`: Buscaba secciones por nombre
+- Sin método `relocateWithOffset`
 
-### Causa: código original de BartmanAbyss
-
-En el **upstream** (BartmanAbyss/WinUAE), en `od-win32/barto_gdbserver.cpp`:
-
-1. Se asigna `processname` desde `debugging_trigger` (p. ej. `:a.exe`) al iniciar el GDB server.
-2. Cuando se detecta la carga del proceso, en el mismo flujo se ejecutaba:
-   ```cpp
-   processptr = 0;
-   xfree(processname);
-   processname = nullptr;
-   ```
-   Eso **borraba** `processname` antes de usarlo.
-3. En `state::connected` se calcula `baseText` (dirección de carga del código) solo si `processname` no es null:
-   ```cpp
-   if(!baseText && processname) { ... baseText = segList + 4; ... }
-   ```
-   Como `processname` era null, **nunca se calculaba `baseText`**.
-4. Además, el código original comparaba el PC con la dirección del breakpoint **sin relocalizar**:
-   ```cpp
-   if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpn.value1 == pc)
-   ```
-   GDB envía direcciones en espacio ELF (p. ej. `0x4C0`). En Amiga, LoadSeg() carga el código en otra dirección (p. ej. `0x1FD28`). Sin `baseText` y sin `loadOffset`, la comparación nunca coincidía.
-
-Conclusión: **el fallo no lo introdujeron nuestras modificaciones; el código original del fork ya tenía este bug.** Nuestra corrección lo arregla.
-
-### Corrección aplicada en este repo
-
-- **No resetear `processname`** en el bloque que se ejecuta al detectar el trigger (donde antes se copiaba erróneamente la lógica de `debug.cpp@process_breakpoint()`).
-- **Usar relocalización** en la comprobación de breakpoints:
-  ```cpp
-  uaecptr loadOffset = (baseText >= 0x400) ? (baseText - 0x400) : 0;
-  uaecptr bpAddr = bpn.value1 + loadOffset;
-  if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpAddr == pc) { ... }
-  ```
-
-Documentación detallada del bug y de la corrección: ver en el proyecto **Cursor-Amiga-C** el archivo `doc/bug-breakpoints-no-funcionan.md`.
-
-### Despliegue de la corrección
-
-1. Recompilar WinUAE-DBG (p. ej. con `build.bat` o desde Visual Studio).
-2. Copiar el ejecutable generado a la extensión amiga-debug:
-   ```batch
-   copy bin\winuae-gdb.exe "%USERPROFILE%\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\win32\"
-   ```
-   (Ajustar versión de la extensión si es distinta.)
+**amigaDebug.ts original**:
+- Usaba `symbolTable.relocate(sections)` directamente
 
 ---
 
-## Logs de diagnóstico en el GDB server
+## Cambios Realizados (2026-02-22)
 
-Para depurar problemas de breakpoints o de flujo, se añadieron en `barto_gdbserver.cpp` logs con prefijo `GDBSERVER: DEBUG`:
+### Fase 1: Intento con `info sections`
 
-- Al iniciar con `debugging_trigger`: valor de `processname`.
-- Al detectar el trigger y guardar estado: confirmación de que `processname` no es null.
-- En `state::connected`: PC actual, `baseText`, `processname`.
-- Al recibir `Z0` (set breakpoint): dirección recibida, `baseText`, `loadOffset`.
-- Al comprobar breakpoints: para cada BP, `value1`, `loadOffset`, `bpAddr`, PC y si hay match.
+**Cambio**: Intentar usar `info sections` en lugar de `info file`.
 
-Esos mensajes salen por:
+**Resultado**: ❌ Fallido - El GDB de Bartman no soporta este comando.
 
-- **OutputDebugString** (visible con DebugView o con un depurador de Windows).
-- **Canal GDB** como salida tipo `O` (si la extensión/GDB muestran la consola de depuración).
+**Revertido**: Sí, inmediatamente.
 
-Para compilación con estos logs no hace falta opción especial; están siempre en el código. Si en el futuro se quiere reducir ruido, se puede envolver en `#ifdef BARTO_GDB_DEBUG` o similar.
+### Fase 2: Intento con `monitor offset`
+
+**Cambio**: Añadir comando `monitor offset` a WinUAE que devuelva baseText.
+
+```cpp
+// En barto_gdbserver.cpp
+} else if(request.substr(0, 14) == "qRcmd,6f6666736574") { // "offset" hex
+    char response[64];
+    sprintf(response, "baseText=%x\n", baseText);
+    SendPacket(hexEncode(response));
+}
+```
+
+**Resultado**: ❌ Parcialmente fallido - La salida de `monitor` no era capturada correctamente por `sendUserInput` en mi2.ts.
+
+**Revertido**: Código dejado pero no usado.
+
+### Fase 3: Uso de `maintenance packet qOffsets`
+
+**Cambio en mi2.ts**:
+
+```typescript
+// Obtener loadOffset de qOffsets
+const qOffsetsNode = await this.sendUserInput('maintenance packet qOffsets');
+if (qOffsetsNode && qOffsetsNode.output) {
+    const text = qOffsetsNode.output.join('');
+    const match = /received:\s*"([0-9a-fA-F]+)/.exec(text);
+    if (match) {
+        const textBase = parseInt(match[1], 16);
+        loadOffset = textBase - ELF_TEXT_BASE;
+    }
+}
+```
+
+**Resultado**: ✅ Funciona - loadOffset se calcula correctamente.
+
+### Fase 4: Relocalización Diferida en WinUAE
+
+**Problema identificado**: Los breakpoints se establecían ANTES de que `qOffsets` calculara `baseText`, resultando en direcciones ELF sin relocar.
+
+**Cambio en barto_gdbserver.cpp**:
+
+```cpp
+// Nueva constante
+constexpr uaecptr ELF_TEXT_BASE = 0x400;
+
+// Almacenamiento de direcciones ELF
+std::vector<uaecptr> breakpoint_elf_addresses;
+
+// Nueva función de relocalización
+void relocate_breakpoints() {
+    if(baseText < ELF_TEXT_BASE) return;
+    uaecptr loadOffset = baseText - ELF_TEXT_BASE;
+    for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
+        uaecptr elfAddr = breakpoint_elf_addresses[i];
+        if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000) {
+            uaecptr relocatedAddr = elfAddr + loadOffset;
+            for(auto& bpn : bpnodes) {
+                if(bpn.enabled && bpn.value1 == elfAddr) {
+                    bpn.value1 = relocatedAddr;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+// Modificación del handler Z0
+} else if(request.substr(0, 2) == "Z0") {
+    uaecptr adr = strtoul(...);
+    uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
+    uaecptr relocatedAdr = adr;
+    if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+        relocatedAdr = adr + loadOffset;
+    }
+    breakpoint_elf_addresses.push_back(adr);
+    bpn.value1 = relocatedAdr;
+}
+
+// Llamada en qOffsets
+} else if(request.substr(0, 8) == "qOffsets") {
+    // ... cálculo de baseText ...
+    relocate_breakpoints();  // NUEVO
+}
+```
+
+**Resultado**: ✅ Los breakpoints se relocalizan correctamente cuando baseText está disponible.
+
+### Fase 5: Mejora del SymbolTable
+
+**Problema identificado**: `symbolTable.relocate(sections)` era frágil porque dependía de coincidencia exacta de nombres de secciones.
+
+**Nuevo método en symbols.ts**:
+
+```typescript
+public relocateWithOffset(loadOffset: number) {
+    // Aplicar offset a todas las secciones ALLOC
+    for(const section of this.sections) {
+        if(section.flags?.find((v) => v === "ALLOC") && section.size > 0) {
+            section.address = section.vma + loadOffset;
+        }
+    }
+    // Actualizar bases de símbolos
+    this.symbols.forEach((symbol) => {
+        const section = this.sections.find((s) => s.name === symbol.section);
+        if(section) {
+            symbol.base = section.address;
+        }
+    });
+}
+```
+
+**Cambio en mi2.ts**:
+
+```typescript
+// Aplicar loadOffset a las secciones para compatibilidad con relocate()
+if (loadOffset > 0) {
+    for (const section of sections) {
+        section.address += loadOffset;
+    }
+}
+
+// Emitir secciones (ya relocadas) Y loadOffset (para relocateWithOffset)
+this.emit("sections-loaded", sections, loadOffset);
+```
+
+**Nota**: `mi2.ts` ahora aplica el offset a las secciones antes de emitirlas, proporcionando dos mecanismos de relocalización:
+1. Las `sections` emitidas ya tienen direcciones relocadas (para uso con `relocate()`)
+2. El `loadOffset` se emite por separado (para uso con `relocateWithOffset()`)
+
+Esto proporciona compatibilidad hacia atrás y redundancia.
+
+**Cambio en amigaDebug.ts**:
+
+```typescript
+this.miDebugger.once('sections-loaded', (sections: Section[], loadOffset?: number) => {
+    if(loadOffset && loadOffset > 0) {
+        this.symbolTable.relocateWithOffset(loadOffset);
+    } else {
+        this.symbolTable.relocate(sections);
+    }
+});
+```
+
+**Resultado**: ✅ La relocalización es más robusta y no depende de nombres de secciones.
 
 ---
 
-## Script `build.bat`
+## Resumen de Cambios por Archivo
 
-- **No fue creado en una sesión reciente:** ya existía en el repo (commit "Add build.bat script for command line compilation").
-- **Ubicación:** raíz del proyecto, `./build.bat`.
-- **Función:** compilar WinUAE-DBG desde línea de comandos sin abrir Visual Studio.
-- **Por defecto:** usa **Visual Studio 18 (2026)** en `C:\Program Files\Microsoft Visual Studio\18\Community`.
-- **Si usas otra instalación** (p. ej. VS 2022 BuildTools):
-  ```batch
-  set VS_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
-  build.bat
-  ```
-  o para x64:
-  ```batch
-  set VS_PATH=C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools
-  build.bat x64
-  ```
-- **Requisitos:** NASM en PATH o en `C:\Program Files\NASM`, y las librerías/includes de WinUAE (ver README.md).
+### barto_gdbserver.cpp
 
----
+| Línea (aprox) | Cambio | Motivo |
+|---------------|--------|--------|
+| ~100 | `constexpr uaecptr ELF_TEXT_BASE = 0x400;` | Constante para cálculos |
+| ~110 | `std::vector<uaecptr> breakpoint_elf_addresses;` | Almacén de direcciones ELF |
+| ~500 | `void relocate_breakpoints()` | Relocalización diferida |
+| ~700 | Handler Z0 modificado | Almacenar y relocalizar |
+| ~750 | Handler z0 modificado | Limpiar direcciones ELF |
+| ~800 | Handler qOffsets modificado | Llamar relocate_breakpoints() |
 
-## Comandos monitor GDB (resumen)
+### mi2.ts
 
-Documentación completa en [GDB_MONITOR_COMMANDS.md](../GDB_MONITOR_COMMANDS.md). Resumen de lo añadido o usado en este fork:
+| Método | Cambio | Motivo |
+|--------|--------|--------|
+| `connect()` | Añadido código para obtener loadOffset de qOffsets | Calcular relocalización |
+| `connect()` | Emitir loadOffset en evento sections-loaded | Pasar offset a amigaDebug |
 
-- **screenshot** – captura de pantalla a PNG.
-- **disasm** – desensamblado m68k.
-- **input key / input event / input joy / input mouse** – teclado, joystick, ratón.
-- **reset** – restaurar savestate al inicio del proceso.
-- **profile** – perfilado de CPU.
-- Gestión de discos (insertar/extraer imágenes) vía comandos monitor.
-- Extensiones MCP: registros, warp mode, etc.
+### symbols.ts
 
----
+| Método | Cambio | Motivo |
+|--------|--------|--------|
+| `relocateWithOffset()` | Nuevo método | Relocalización más robusta |
+| `relocate()` | Añadido logging | Diagnóstico |
+| `getFunctionAtAddress()` | Añadido logging | Diagnóstico |
 
-## MCP (mcp-winuae-emu)
+### amigaDebug.ts
 
-- El MCP se conecta al mismo servidor GDB que usa la extensión amiga-debug (puerto 2345).
-- Puede arrancar WinUAE con una config `.uae` o conectarse a una sesión ya iniciada por el usuario (F5 en VS Code).
-- Configuración de ejemplo en el proyecto Cursor-Amiga-C: `.cursor/mcp.json` con rutas a WinUAE y al ejecutable del MCP.
+| Método | Cambio | Motivo |
+|--------|--------|--------|
+| Handler `sections-loaded` | Usar loadOffset si disponible | Preferir nuevo método de relocalización |
 
 ---
 
-## Referencias rápidas
+## Código Original vs Código Modificado
 
-| Tema              | Dónde está |
-|-------------------|------------|
-| Compilación       | [README.md](../README.md), `build.bat` |
-| Comandos GDB      | [GDB_MONITOR_COMMANDS.md](../GDB_MONITOR_COMMANDS.md) |
-| Bug breakpoints   | Cursor-Amiga-C: `doc/bug-breakpoints-no-funcionan.md` |
-| Este historial    | `docs/HISTORIAL-CAMBIOS.md` |
+### Handler Z0 - Comparación
+
+**Original**:
+```cpp
+} else if(request.substr(0, 2) == "Z0") {
+    auto comma = request.find(',', strlen("Z0"));
+    if(comma != std::string::npos) {
+        uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
+        // Buscar bpnode libre y asignar
+        for(auto& bpn : bpnodes) {
+            if(bpn.enabled) continue;
+            bpn.value1 = adr;  // Sin relocalización
+            bpn.enabled = true;
+            // ...
+            break;
+        }
+        SendPacket("OK");
+    }
+}
+```
+
+**Modificado**:
+```cpp
+} else if(request.substr(0, 2) == "Z0") {
+    auto comma = request.find(',', strlen("Z0"));
+    if(comma != std::string::npos) {
+        uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
+        
+        // NUEVO: Calcular loadOffset si baseText disponible
+        uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
+        uaecptr relocatedAdr = adr;
+        if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+            relocatedAdr = adr + loadOffset;
+        }
+        
+        // NUEVO: Almacenar dirección ELF para relocalización diferida
+        breakpoint_elf_addresses.push_back(adr);
+        
+        for(auto& bpn : bpnodes) {
+            if(bpn.enabled) continue;
+            bpn.value1 = relocatedAdr;  // Usar dirección relocada
+            bpn.enabled = true;
+            // ...
+            break;
+        }
+        SendPacket("OK");
+    }
+}
+```
 
 ---
 
-*Última actualización: febrero 2025.*
+## Notas para Futuras Modificaciones
+
+1. **Si se modifica el toolchain amiga-gcc**: Verificar que `ELF_TEXT_BASE` siga siendo `0x400`.
+
+2. **Si se añaden nuevos tipos de breakpoints (watchpoints)**: Aplicar la misma lógica de relocalización diferida.
+
+3. **Si se cambia el formato de qOffsets**: Actualizar el regex en mi2.ts y la lógica de parseo.
+
+4. **Para debug de los cambios**: Buscar mensajes `barto_log` en la salida de debug y mensajes `MI2:` en la consola de VS Code.
+
+---
+
+*Actualizado: 2026-02-22*

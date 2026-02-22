@@ -41,7 +41,7 @@ set "VCTargetsPath=%VS_PATH%\MSBuild\Microsoft\VC\v180\"
 set "BUILD_EXIT=%errorlevel%"
 if %BUILD_EXIT% equ 0 (
   echo.
-  echo Compilacion OK. Ejecutable: bin\winuae-gdb.exe para Win32 (32-bit por defecto), bin\winuae-gdb-x64.exe para x64
+  echo Compilacion OK. Ejecutable: bin\winuae-gdb.exe ^(Win32, 32-bit por defecto^), bin\winuae-gdb-x64.exe ^(x64^)
   echo Copiado a amiga-debug extension si el target CopyToAmigaDebug se ejecuto.
 ) else (
   echo Compilacion fallida.

@@ -80,8 +80,8 @@ $env:PATH = "C:\Program Files\NASM;$env:PATH"
 
 Los ejecutables se generan en `<directorio_fuente>\bin\`:
 
-- **winuae-gdb.exe** – versión 64-bit (recomendada)
-- **winuae-gdb-x86.exe** – versión 32-bit (sufijo para distinguirla)
+- **winuae-gdb.exe** – versión 32-bit (Win32, por defecto, más estable)
+- **winuae-gdb-x64.exe** – versión 64-bit
 
 ---
 
@@ -90,8 +90,8 @@ Los ejecutables se generan en `<directorio_fuente>\bin\`:
 El proyecto incluye **`build.bat`** en la raíz para compilar desde línea de comandos sin abrir Visual Studio:
 
 ```batch
-./build.bat         :: Compila x64 Release (por defecto, recomendado)
-./build.bat win32   :: Compila Win32 Release
+./build.bat         :: Compila Win32 Release (32-bit, por defecto, más estable)
+./build.bat x64     :: Compila x64 Release (64-bit)
 ```
 
 Requisitos:
@@ -108,7 +108,7 @@ build.bat
 
 (Con VS 2022/2019 puede que debas cambiar el *Platform Toolset* del proyecto a **v143** o **v142**.)
 
-El script llama a `vcvarsall.bat` (x64 o x86) para configurar el entorno y luego MSBuild. Salida: **winuae-gdb.exe** (x64) o **winuae-gdb-x86.exe** (32 bits). Tras una compilación correcta, el target **CopyToAmigaDebug** copia el ejecutable a `bin\win64` o `bin\win32` de la extensión amiga-debug.
+El script llama a `vcvarsall.bat` (x86 o x64) para configurar el entorno y luego MSBuild. Salida: **winuae-gdb.exe** (Win32, 32-bit) o **winuae-gdb-x64.exe** (x64, 64-bit). Tras una compilación correcta, el target **CopyToAmigaDebug** copia el ejecutable a `bin\win32` o `bin\win64` de la extensión amiga-debug.
 
 ---
 

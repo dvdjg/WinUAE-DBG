@@ -67,6 +67,9 @@ namespace barto_gdbserver {
 	bool data_available();
 	void disconnect();
 
+	// ELF .text section base address for amiga-gcc toolchain
+	constexpr uaecptr ELF_TEXT_BASE = 0x400;
+
 	static bool in_handle_packet = false;
 	struct tracker {
 		tracker() { backup = in_handle_packet; in_handle_packet = true; }
@@ -218,6 +221,30 @@ namespace barto_gdbserver {
 	uint32_t systemStackLower{}, systemStackUpper{};
 	uint32_t stackLower{}, stackUpper{};
 	std::vector<uint32_t> sections; // base for every section
+	
+	// Store original ELF addresses for breakpoints (for deferred relocation)
+	std::vector<uaecptr> breakpoint_elf_addresses;
+	
+	// Relocate all existing breakpoints when baseText is calculated
+	void relocate_breakpoints() {
+		if(baseText < ELF_TEXT_BASE) {
+			return;
+		}
+		uaecptr loadOffset = baseText - ELF_TEXT_BASE;
+		for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
+			uaecptr elfAddr = breakpoint_elf_addresses[i];
+			if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000) {
+				uaecptr relocatedAddr = elfAddr + loadOffset;
+				for(auto& bpn : bpnodes) {
+					if(bpn.enabled && bpn.value1 == elfAddr) {
+						bpn.value1 = relocatedAddr;
+						break;
+					}
+				}
+			}
+		}
+	}
+	
 	std::string profile_outname;
 	int profile_num_frames{};
 	int profile_frame_count{};
@@ -619,6 +646,10 @@ namespace barto_gdbserver {
 												stackLower = stackUpper - pr_StackSize;
 											}
 											baseText = 0;
+											barto_log("GDBSERVER: qOffsets - scanning segments for process '%s':\n", 
+												ln_Name ? ln_Name : "(null)");
+											// ORIGINAL BARTMAN CODE: Report hunk base addresses directly
+											// The modified GDB (m68k-amiga-elf-gdb) handles relocation internally
 											for(int i = 0; segList; i++) {
 												auto size = get_long_debug(segList - 4) - 4;
 												auto base = segList + 4;
@@ -630,12 +661,17 @@ namespace barto_gdbserver {
 													response = "$";
 												else
 													response += ";";
-												// this is non-standard (we report addresses of all segments), works only with modified gdb
+												// Non-standard format: semicolon-separated absolute addresses
+												// Works only with Bartman's modified GDB
 												response += hex32(base);
 												sections.push_back(base);
-												barto_log("GDBSERVER:   base=%x; size=%x\n", base, size);
+												barto_log("GDBSERVER:   hunk[%d]: base=0x%x, size=0x%x\n", i, base, size);
 												segList = BADDR(get_long_debug(segList));
 											}
+											barto_log("GDBSERVER: qOffsets - baseText=0x%x, sizeText=0x%x\n",
+												baseText, sizeText);
+											// Now that we have baseText, relocate any pending breakpoints
+											relocate_breakpoints();
 										}
 									}
 								} else if(request.substr(0, strlen("qRcmd,")) == "qRcmd,") {
@@ -955,9 +991,24 @@ namespace barto_gdbserver {
 											disk_eject(3);
 											response += "OK";
 										} else { response += "E01"; }
-									} else if(cmd.substr(0, strlen("warp")) == "warp") {
-										// MCP-WINUAE-EMU EXTENSION: Warp/turbo mode control
-										// syntax: monitor warp <0|1|on|off|status>
+								} else if(cmd == "offset" || cmd.substr(0, strlen("offset ")) == "offset ") {
+									// syntax: monitor offset
+									// Returns: Text=<baseText>;Data=<baseData>;Bss=<baseBss>;LoadOffset=<loadOffset>;SizeText=<sizeText>
+									// This provides relocation information for debugger extensions
+									char info[256];
+									uaecptr loadOff = (baseText != 0) ? (baseText - ELF_TEXT_BASE) : 0;
+									// Find data and bss sections from sections vector
+									uaecptr dataBase = 0, bssBase = 0;
+									if(sections.size() >= 2) dataBase = sections[1];
+									if(sections.size() >= 3) bssBase = sections[2];
+									snprintf(info, sizeof(info), 
+										"Text=%x;Data=%x;Bss=%x;LoadOffset=%x;SizeText=%x",
+										baseText, dataBase, bssBase, loadOff, sizeText);
+									barto_log("GDBSERVER: monitor offset -> %s\n", info);
+									response += to_hex(std::string(info));
+								} else if(cmd.substr(0, strlen("warp")) == "warp") {
+									// MCP-WINUAE-EMU EXTENSION: Warp/turbo mode control
+									// syntax: monitor warp <0|1|on|off|status>
 										auto s = cmd.substr(strlen("warp"));
 										while(!s.empty() && s[0] == ' ') s = s.substr(1);
 										if(s.empty() || s == "status") {
@@ -1081,8 +1132,14 @@ namespace barto_gdbserver {
 									auto comma = request.find(',', strlen("Z0"));
 									if(comma != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
-										barto_log("GDBSERVER: DEBUG Z0 (set breakpoint) request: addr=0x%x, baseText=0x%x, loadOffset=0x%x\n",
-											adr, baseText, (baseText >= 0x400) ? (baseText - 0x400) : 0);
+										// GDB sends ELF addresses, we need to relocate them
+										// If baseText is known, calculate load offset and apply it
+										// Otherwise store the ELF address for deferred relocation
+										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
+										uaecptr relocatedAdr = adr;
+										if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+											relocatedAdr = adr + loadOffset;
+										}
 										if(adr == 0xffffffff) {
 											// step out of kickstart
 											trace_mode = TRACE_RANGE_PC;
@@ -1090,16 +1147,18 @@ namespace barto_gdbserver {
 											trace_param[1] = 0xF80000;
 											response += "OK";
 										} else {
+											// Store ELF address for potential deferred relocation
+											breakpoint_elf_addresses.push_back(adr);
 											for(auto& bpn : bpnodes) {
 												if(bpn.enabled)
 													continue;
-												bpn.value1 = adr;
+												// Store original ELF address if no relocation yet
+												// Will be relocated later when qOffsets provides baseText
+												bpn.value1 = relocatedAdr;
 												bpn.type = BREAKPOINT_REG_PC;
 												bpn.oper = BREAKPOINT_CMP_EQUAL;
 												bpn.enabled = 1;
-												trace_mode = TRACE_CHECKONLY;
-												barto_log("GDBSERVER: DEBUG Breakpoint set: value1=0x%x (ELF addr)\n", adr);
-												print_breakpoints();
+												trace_mode = 0;
 												response += "OK";
 												break;
 											}
@@ -1111,11 +1170,17 @@ namespace barto_gdbserver {
 									auto comma = request.find(',', strlen("z0"));
 									if(comma != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("z0,"), nullptr, 16);
+										// Apply same relocation as Z0
+										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
+										uaecptr relocatedAdr = adr;
+										if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+											relocatedAdr = adr + loadOffset;
+										}
 										if(adr == 0xffffffff) {
 											response += "OK";
 										} else {
 											for(auto& bpn : bpnodes) {
-												if(bpn.enabled && bpn.value1 == adr) {
+												if(bpn.enabled && bpn.value1 == relocatedAdr) {
 													bpn.enabled = 0;
 													trace_mode = 0;
 													for(const auto& bp : bpnodes)
@@ -1730,31 +1795,7 @@ start_profile:
 		if(debugger_state == state::connected) {
 //while(!IsDebuggerPresent()) Sleep(100); __debugbreak();
 			auto pc = munge24(m68k_getpc());
-			barto_log("GDBSERVER: DEBUG state::connected PC=0x%x baseText=0x%x processname=%s\n", 
-				pc, baseText, processname ? processname : "(null)");
-			// Compute load offset for relocation: ELF is at 0x400, LoadSeg puts code at baseText
-			if(!baseText && processname) {
-				auto BADDR = [](uaecptr bptr) { return (uaecptr)((uint32_t)bptr << 2); };
-				auto execbase = get_long_debug(4);
-				auto ThisTask = get_long_debug(execbase + 276);
-				if(ThisTask && get_byte_debug(ThisTask + 8) == 13) {
-					uaecptr segList = 0;
-					auto pr_CLI = BADDR(get_long_debug(ThisTask + 172));
-					if(pr_CLI)
-						segList = BADDR(get_long_debug(pr_CLI + 60));
-					else {
-						auto pr_SegList = BADDR(get_long_debug(ThisTask + 128));
-						if(pr_SegList)
-							segList = BADDR(get_long_debug(pr_SegList + 12));
-					}
-					if(segList) {
-						baseText = segList + 4;
-						sizeText = get_long_debug(segList - 4) - 4;
-						barto_log("GDBSERVER: baseText=0x%x (load offset 0x%x)\n", baseText, baseText - 0x400);
-					}
-				}
-			}
-			uaecptr loadOffset = (baseText >= 0x400) ? (baseText - 0x400) : 0;
+			barto_log("GDBSERVER: state::connected PC=0x%x baseText=0x%x\n", pc, baseText);
 			if (pc == KPutCharX) {
 				// if this is too slow, hook uaelib trap#86
 				auto ascii = static_cast<uint8_t>(m68k_dreg(regs, 0));
@@ -1800,12 +1841,10 @@ start_profile:
 				}
 			}
 			for(const auto& bpn : bpnodes) {
-				uaecptr bpAddr = bpn.value1 + loadOffset; // relocate ELF addr to actual load addr
-				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC) {
-					barto_log("GDBSERVER: DEBUG BP check: bpn.value1=0x%x + loadOffset=0x%x = bpAddr=0x%x, PC=0x%x, match=%d\n",
-						bpn.value1, loadOffset, bpAddr, pc, (bpAddr == pc));
-				}
-				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpAddr == pc) {
+				// ORIGINAL BARTMAN CODE: GDB sends already-relocated addresses
+				// The modified GDB (m68k-amiga-elf-gdb) applies qOffsets relocation internally
+				// So we just compare directly without any transformation
+				if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpn.value1 == pc) {
 					// see binutils-gdb/include/gdb/signals.def for number of signals
 					if(pc == Trap7) {
 						response = "S07"; // TRAP#7 -> SIGEMT
