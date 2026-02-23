@@ -271,6 +271,199 @@ namespace barto_gdbserver {
 	// FIX: Save trigger processname locally because deactivate_debugger() clears the global
 	std::string saved_processname;
 
+	// Helper: Find a process by name in the Exec task lists
+	// Returns the address of the Process structure, or 0 if not found
+	// The name matching is case-insensitive and supports partial matches (prefix ':' means any)
+	uaecptr find_process_by_name(const char* target_name) {
+		if(!target_name || !target_name[0]) return 0;
+		
+		auto execbase = get_long_debug(4);
+		if(!execbase) return 0;
+		
+		// Check if target_name starts with ':' (means match any process with that suffix)
+		bool match_suffix = (target_name[0] == ':');
+		const char* match_pattern = match_suffix ? (target_name + 1) : target_name;
+		
+		barto_log("FINDPROC: Looking for process matching '%s' (suffix_match=%d)\n", 
+			match_pattern, match_suffix);
+		
+		// Iterate over TaskReady and TaskWait lists
+		// TaskReady: execbase + 406 (offset for Ready list head)
+		// TaskWait: execbase + 420 (offset for Wait list head)
+		// Also check the current task at execbase + 276
+		
+		auto check_task = [&](uaecptr task_addr) -> uaecptr {
+			if(!task_addr) return 0;
+			
+			auto ln_Type = get_byte_debug(task_addr + 8);
+			if(ln_Type != 13) return 0; // Not a process (NT_PROCESS = 13)
+			
+			auto ln_Name_ptr = get_long_debug(task_addr + 10);
+			if(!ln_Name_ptr) return 0;
+			
+			auto ln_Name = reinterpret_cast<char*>(get_real_address_debug(ln_Name_ptr));
+			if(!ln_Name) return 0;
+			
+			barto_log("FINDPROC:   Checking process '%s' at 0x%x\n", ln_Name, task_addr);
+			
+			// Match: either exact match or suffix match (if target starts with ':')
+			bool matches = false;
+			if(match_suffix) {
+				// Match if ln_Name ends with match_pattern (case-insensitive)
+				size_t name_len = strlen(ln_Name);
+				size_t pattern_len = strlen(match_pattern);
+				if(name_len >= pattern_len) {
+					matches = (_stricmp(ln_Name + name_len - pattern_len, match_pattern) == 0);
+				}
+			} else {
+				// Exact match (case-insensitive)
+				matches = (_stricmp(ln_Name, match_pattern) == 0);
+			}
+			
+			if(matches) {
+				barto_log("FINDPROC:   MATCH FOUND: '%s' at 0x%x\n", ln_Name, task_addr);
+				return task_addr;
+			}
+			return 0;
+		};
+		
+		// Helper to iterate a task list
+		auto iterate_list = [&](uaecptr list_head) -> uaecptr {
+			// List structure: lh_Head at offset 0
+			auto node = get_long_debug(list_head);
+			while(node) {
+				// Check ln_Succ to see if we've reached the end (points to list tail)
+				auto ln_Succ = get_long_debug(node);
+				if(!ln_Succ) break;
+				
+				auto found = check_task(node);
+				if(found) return found;
+				
+				node = ln_Succ;
+			}
+			return 0;
+		};
+		
+		// First check ThisTask (current process)
+		auto thisTask = get_long_debug(execbase + 276);
+		auto found = check_task(thisTask);
+		if(found) return found;
+		
+		// Then check TaskReady list (offset 406)
+		found = iterate_list(execbase + 406);
+		if(found) return found;
+		
+		// Then check TaskWait list (offset 420) 
+		found = iterate_list(execbase + 420);
+		if(found) return found;
+		
+		barto_log("FINDPROC: Process '%s' NOT FOUND\n", target_name);
+		return 0;
+	}
+
+	// Helper: Find a CLI process that has a module matching the given name
+	// Returns the Process address and sets outSegList to the module's SegList
+	// This is useful for finding programs loaded via "Run" command
+	uaecptr find_cli_with_module(const char* module_name, uaecptr* outSegList) {
+		if(!module_name || !module_name[0]) return 0;
+		if(outSegList) *outSegList = 0;
+		
+		auto execbase = get_long_debug(4);
+		if(!execbase) return 0;
+		
+		// BADDR macro: convert BPTR to APTR
+		auto BADDR = [](uaecptr bptr) -> uaecptr { return bptr << 2; };
+		
+		// Strip ':' prefix if present
+		bool match_suffix = (module_name[0] == ':');
+		const char* match_pattern = match_suffix ? (module_name + 1) : module_name;
+		
+		barto_log("FINDCLI: Looking for CLI with module matching '%s'\n", match_pattern);
+		
+		auto check_cli_process = [&](uaecptr task_addr) -> bool {
+			if(!task_addr) return false;
+			
+			auto ln_Type = get_byte_debug(task_addr + 8);
+			if(ln_Type != 13) return false; // NT_PROCESS = 13
+			
+			// Get pr_CLI (BPTR to CommandLineInterface)
+			auto pr_CLI = get_long_debug(task_addr + 0xAC);
+			if(!pr_CLI) return false;
+			
+			auto cli = BADDR(pr_CLI);
+			if(!cli) return false;
+			
+			// Get cli_CommandName (BSTR - first byte is length)
+			auto cli_CommandName = BADDR(get_long_debug(cli + 0x10));
+			char cmd_name[256] = {0};
+			if(cli_CommandName) {
+				auto len = get_byte_debug(cli_CommandName);
+				for(int i = 0; i < len && i < 255; i++) {
+					cmd_name[i] = get_byte_debug(cli_CommandName + 1 + i);
+				}
+			}
+			
+			// Get cli_Module (BPTR to SegList)
+			auto cli_Module = get_long_debug(cli + 0x3C);
+			uaecptr segList = cli_Module ? BADDR(cli_Module) : 0;
+			
+			auto ln_Name_ptr = get_long_debug(task_addr + 10);
+			auto ln_Name = ln_Name_ptr ? reinterpret_cast<char*>(get_real_address_debug(ln_Name_ptr)) : nullptr;
+			
+			barto_log("FINDCLI:   Process '%s' at 0x%x: cli=0x%x, cmd='%s', module=0x%x\n",
+				ln_Name ? ln_Name : "?", task_addr, cli, cmd_name, segList);
+			
+			// Match command name or process name
+			bool matches = false;
+			if(cmd_name[0]) {
+				if(match_suffix) {
+					size_t name_len = strlen(cmd_name);
+					size_t pattern_len = strlen(match_pattern);
+					if(name_len >= pattern_len) {
+						matches = (_stricmp(cmd_name + name_len - pattern_len, match_pattern) == 0);
+					}
+				} else {
+					matches = (_stricmp(cmd_name, match_pattern) == 0);
+				}
+			}
+			
+			if(matches && segList) {
+				barto_log("FINDCLI:   MATCH FOUND: '%s' -> segList=0x%x\n", cmd_name, segList);
+				if(outSegList) *outSegList = segList;
+				return true;
+			}
+			return false;
+		};
+		
+		// Helper to iterate a task list
+		auto iterate_list = [&](uaecptr list_head) -> uaecptr {
+			auto node = get_long_debug(list_head);
+			while(node) {
+				auto ln_Succ = get_long_debug(node);
+				if(!ln_Succ) break;
+				
+				if(check_cli_process(node)) return node;
+				
+				node = ln_Succ;
+			}
+			return 0;
+		};
+		
+		// Check ThisTask
+		auto thisTask = get_long_debug(execbase + 276);
+		if(check_cli_process(thisTask)) return thisTask;
+		
+		// Check TaskReady and TaskWait
+		auto found = iterate_list(execbase + 406);
+		if(found) return found;
+		
+		found = iterate_list(execbase + 420);
+		if(found) return found;
+		
+		barto_log("FINDCLI: Module '%s' NOT FOUND\n", module_name);
+		return 0;
+	}
+
 	// Helper: call deactivate_debugger() but preserve processname for GDB server
 	void deactivate_debugger_preserve_processname() {
 		// Save processname before deactivate clears it
@@ -648,50 +841,98 @@ namespace barto_gdbserver {
 								} else if(request.substr(0, strlen("qC")) == "qC") {
 									response += "QC1";
 								} else if(request.substr(0, strlen("qOffsets")) == "qOffsets") {
+									// FIX: If baseText was already detected by AUTODETECT, use it directly
+									// This is critical because the client may call qOffsets after stopping
+									// at a breakpoint, and we need to return the detected offset
+									if(baseText > 0 && sizeText > 0) {
+										barto_log("GDBSERVER: qOffsets - using AUTODETECTED baseText=0x%x, sizeText=0x%x (%d sections)\n",
+											baseText, sizeText, (int)sections.size());
+										// Return sections if available, otherwise just baseText
+										if(!sections.empty()) {
+											response = "$";
+											for(size_t i = 0; i < sections.size(); i++) {
+												if(i > 0) response += ";";
+												response += hex32(sections[i]);
+											}
+										} else {
+											// Single section case (most common for AUTODETECT)
+											response = "$" + hex32(baseText);
+										}
+									} else {
+									// Fall through to process search if no AUTODETECT data
 									auto BADDR = [](auto bptr) { return bptr << 2; };
 									auto BSTR = [](auto bstr) { return std::string(reinterpret_cast<char*>(bstr) + 1, bstr[0]); };
-									// from debug.cpp@show_exec_tasks
 									auto execbase = get_long_debug(4);
-									auto ThisTask = get_long_debug(execbase + 276);
+									
+									// FIX: Search for the target process by name instead of using ThisTask
+									// ThisTask might be any system process (e.g., CON, Workbench) when qOffsets is called
+									uaecptr TargetProcess = 0;
+									uaecptr cliSegList = 0; // Set by find_cli_with_module if found
+									const char* search_name = processname ? processname : (saved_processname.empty() ? nullptr : saved_processname.c_str());
+									
+									barto_log("GDBSERVER: qOffsets - searching for process (processname='%s', saved='%s')\n",
+										processname ? processname : "(null)", 
+										saved_processname.empty() ? "(empty)" : saved_processname.c_str());
+									
+									if(search_name && search_name[0]) {
+										// First try to find process by exact name
+										TargetProcess = find_process_by_name(search_name);
+										
+										// If not found, try to find a CLI with that module loaded
+										if(!TargetProcess) {
+											barto_log("GDBSERVER: qOffsets - process not found, trying CLI module search\n");
+											TargetProcess = find_cli_with_module(search_name, &cliSegList);
+										}
+									}
+									
+									// Fallback to ThisTask if process not found by name
+									if(!TargetProcess) {
+										TargetProcess = get_long_debug(execbase + 276);
+										barto_log("GDBSERVER: qOffsets - using ThisTask fallback: 0x%x\n", TargetProcess);
+									}
+									
 									response += "E01";
-									if(ThisTask) {
-										auto ln_Name = reinterpret_cast<char*>(get_real_address_debug(get_long_debug(ThisTask + 10)));
-										barto_log("GDBSERVER: ln_Name = %s\n", ln_Name);
-										auto ln_Type = get_byte_debug(ThisTask + 8);
+									if(TargetProcess) {
+										auto ln_Name = reinterpret_cast<char*>(get_real_address_debug(get_long_debug(TargetProcess + 10)));
+										barto_log("GDBSERVER: qOffsets - selected process: '%s' at 0x%x\n", 
+											ln_Name ? ln_Name : "(null)", TargetProcess);
+										auto ln_Type = get_byte_debug(TargetProcess + 8);
 										bool process = ln_Type == 13; // NT_PROCESS
 										sections.clear();
 										if(process) {
 											constexpr auto sizeofLN = 14;
-											// not correct when started from CLI
-											auto tc_SPLower = get_long_debug(ThisTask + sizeofLN + 44);
-											auto tc_SPUpper = get_long_debug(ThisTask + sizeofLN + 48) - 2;
+											auto tc_SPLower = get_long_debug(TargetProcess + sizeofLN + 44);
+											auto tc_SPUpper = get_long_debug(TargetProcess + sizeofLN + 48) - 2;
 											stackLower = tc_SPLower;
 											stackUpper = tc_SPUpper;
-											//auto pr_StackBase = BADDR(get_long_debug(ThisTask + 144));
-											//stackUpper = pr_StackBase;
 
 											systemStackLower = get_long_debug(execbase + 58);
 											systemStackUpper = get_long_debug(execbase + 54);
-											auto pr_SegList = BADDR(get_long_debug(ThisTask + 128));
-											// not correct when started from CLI
-											auto numSegLists = get_long_debug(pr_SegList + 0);
-											auto segList = BADDR(get_long_debug(pr_SegList + 12)); // from debug.cpp@debug()
-											auto pr_CLI = BADDR(get_long_debug(ThisTask + 172));
-											int pr_TaskNum = get_long_debug(ThisTask + 140);
-											if(pr_CLI && pr_TaskNum) {
-												auto cli_CommandName = BSTR(get_real_address_debug(BADDR(get_long_debug(pr_CLI + 16))));
-												barto_log("GDBSERVER: cli_CommandName = %s\n", cli_CommandName.c_str());
-												segList = BADDR(get_long_debug(pr_CLI + 60));
-												// don't know how to get the real stack except reading current stack pointer
-												auto pr_StackSize = get_long_debug(ThisTask + 132);
-												stackUpper = m68k_areg(regs, A7 - A0);
-												stackLower = stackUpper - pr_StackSize;
+											
+											// If cliSegList was found by find_cli_with_module, use it directly
+											uaecptr segList = 0;
+											if(cliSegList) {
+												barto_log("GDBSERVER: qOffsets - using segList from find_cli_with_module: 0x%x\n", cliSegList);
+												segList = cliSegList;
+											} else {
+												// Standard lookup from process structure
+												auto pr_SegList = BADDR(get_long_debug(TargetProcess + 128));
+												auto numSegLists = get_long_debug(pr_SegList + 0);
+												segList = BADDR(get_long_debug(pr_SegList + 12));
+												auto pr_CLI = BADDR(get_long_debug(TargetProcess + 172));
+												int pr_TaskNum = get_long_debug(TargetProcess + 140);
+												if(pr_CLI && pr_TaskNum) {
+													auto cli_CommandName = BSTR(get_real_address_debug(BADDR(get_long_debug(pr_CLI + 16))));
+													barto_log("GDBSERVER: qOffsets - CLI command: '%s'\n", cli_CommandName.c_str());
+													segList = BADDR(get_long_debug(pr_CLI + 60));
+													auto pr_StackSize = get_long_debug(TargetProcess + 132);
+													stackUpper = m68k_areg(regs, A7 - A0);
+													stackLower = stackUpper - pr_StackSize;
+												}
 											}
 											baseText = 0;
 											barto_log("GDBSERVER: qOffsets - scanning segments for process '%s':\n", 
 												ln_Name ? ln_Name : "(null)");
-											// ORIGINAL BARTMAN CODE: Report hunk base addresses directly
-											// The modified GDB (m68k-amiga-elf-gdb) handles relocation internally
 											for(int i = 0; segList; i++) {
 												auto size = get_long_debug(segList - 4) - 4;
 												auto base = segList + 4;
@@ -703,19 +944,21 @@ namespace barto_gdbserver {
 													response = "$";
 												else
 													response += ";";
-												// Non-standard format: semicolon-separated absolute addresses
-												// Works only with Bartman's modified GDB
 												response += hex32(base);
 												sections.push_back(base);
 												barto_log("GDBSERVER:   hunk[%d]: base=0x%x, size=0x%x\n", i, base, size);
 												segList = BADDR(get_long_debug(segList));
 											}
-											barto_log("GDBSERVER: qOffsets - baseText=0x%x, sizeText=0x%x\n",
+											barto_log("GDBSERVER: qOffsets - RESULT: baseText=0x%x, sizeText=0x%x\n",
 												baseText, sizeText);
-											// Now that we have baseText, relocate any pending breakpoints
 											relocate_breakpoints();
+										} else {
+											barto_log("GDBSERVER: qOffsets - ERROR: selected task is not a process (type=%d)\n", ln_Type);
 										}
+									} else {
+										barto_log("GDBSERVER: qOffsets - ERROR: no process found\n");
 									}
+									} // end of else block for process search
 								} else if(request.substr(0, strlen("qRcmd,")) == "qRcmd,") {
 									// "monitor" command. used for profiling
 									auto cmd = from_hex(request.substr(strlen("qRcmd,")));
@@ -1101,6 +1344,112 @@ namespace barto_gdbserver {
 											response += "E01";
 										}
 									}
+								} else if(cmd == "findproc" || cmd.substr(0, strlen("findproc ")) == "findproc ") {
+									// Re-scan process list and update baseText
+									// syntax: monitor findproc [name] - scan for process and update baseText
+									// Also searches for CLI processes with matching module name
+									auto rest = cmd.length() > 8 ? cmd.substr(8) : "";
+									while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+									
+									const char* search_name = !rest.empty() ? rest.c_str() :
+										(processname ? processname : (saved_processname.empty() ? nullptr : saved_processname.c_str()));
+									
+									if(!search_name || !search_name[0]) {
+										response += to_hex(std::string("No process name to search"));
+									} else {
+										barto_log("FINDPROC: monitor findproc searching for '%s'\n", search_name);
+										auto BADDR = [](auto bptr) -> uaecptr { return bptr << 2; };
+										
+										// First try to find by process name
+										uaecptr proc = find_process_by_name(search_name);
+										uaecptr segList = 0;
+										
+										if(proc) {
+											// Found the process, get its SegList
+											auto pr_SegList = BADDR(get_long_debug(proc + 0x80));
+											auto pr_CLI = get_long_debug(proc + 0xAC);
+											
+											if(pr_CLI) {
+												auto cli = BADDR(pr_CLI);
+												auto cli_Module = get_long_debug(cli + 0x3C);
+												if(cli_Module) segList = BADDR(cli_Module);
+											}
+											if(!segList && pr_SegList) {
+												segList = pr_SegList;
+											}
+										} else {
+											// Not found by name, try finding CLI with that module
+											barto_log("FINDPROC: process not found, trying CLI module search\n");
+											proc = find_cli_with_module(search_name, &segList);
+										}
+										
+										if(proc && segList) {
+											baseText = segList + 4;
+											sizeText = get_long_debug(segList - 4) - 4;
+											char info[512];
+											snprintf(info, sizeof(info), 
+												"Found module '%s' at proc=0x%x, segList=0x%x, baseText=0x%x, size=0x%x",
+												search_name, proc, segList, baseText, sizeText);
+											barto_log("FINDPROC: %s\n", info);
+											relocate_breakpoints();
+											response += to_hex(std::string(info));
+										} else if(proc) {
+											response += to_hex(std::string("Process found but no SegList"));
+										} else {
+											// List all processes and CLIs for debugging
+											std::string output = "Process/Module not found. Current processes:\n";
+											auto execbase = get_long_debug(4);
+											auto iterate_list = [&](uaecptr list_head, const char* list_name) {
+												auto node = get_long_debug(list_head);
+												while(node) {
+													auto ln_Succ = get_long_debug(node);
+													if(!ln_Succ) break;
+													auto ln_Type = get_byte_debug(node + 8);
+													if(ln_Type == 13) { // NT_PROCESS
+														auto ln_Name_ptr = get_long_debug(node + 10);
+														auto ln_Name = ln_Name_ptr ? reinterpret_cast<char*>(get_real_address_debug(ln_Name_ptr)) : nullptr;
+														char line[256];
+														
+														// Check for CLI info
+														auto pr_CLI = get_long_debug(node + 0xAC);
+														if(pr_CLI) {
+															auto cli = BADDR(pr_CLI);
+															auto cli_CommandName = BADDR(get_long_debug(cli + 0x10));
+															char cmd_name[64] = {0};
+															if(cli_CommandName) {
+																auto len = get_byte_debug(cli_CommandName);
+																for(int i = 0; i < len && i < 63; i++) {
+																	cmd_name[i] = get_byte_debug(cli_CommandName + 1 + i);
+																}
+															}
+															auto cli_Module = get_long_debug(cli + 0x3C);
+															snprintf(line, sizeof(line), "  %s: '%s' at 0x%x (CLI cmd='%s', module=0x%x)\n", 
+																list_name, ln_Name ? ln_Name : "?", node, cmd_name, cli_Module ? BADDR(cli_Module) : 0);
+														} else {
+															snprintf(line, sizeof(line), "  %s: '%s' at 0x%x\n", 
+																list_name, ln_Name ? ln_Name : "?", node);
+														}
+														output += line;
+													}
+													node = ln_Succ;
+												}
+											};
+											auto thisTask = get_long_debug(execbase + 276);
+											if(thisTask) {
+												auto ln_Type = get_byte_debug(thisTask + 8);
+												if(ln_Type == 13) {
+													auto ln_Name_ptr = get_long_debug(thisTask + 10);
+													auto ln_Name = ln_Name_ptr ? reinterpret_cast<char*>(get_real_address_debug(ln_Name_ptr)) : nullptr;
+													char line[128];
+													snprintf(line, sizeof(line), "  ThisTask: '%s' at 0x%x\n", ln_Name ? ln_Name : "?", thisTask);
+													output += line;
+												}
+											}
+											iterate_list(execbase + 406, "TaskReady");
+											iterate_list(execbase + 420, "TaskWait");
+											response += to_hex(output);
+										}
+									}
 								} else if(cmd == "breakpoints" || cmd == "bp") {
 									// DEBUGGING: List all active breakpoints with their addresses
 									// syntax: monitor breakpoints  (or: monitor bp)
@@ -1269,12 +1618,25 @@ namespace barto_gdbserver {
 											return;
 										} else if(action == "c") { // continue
 											debugger_state = state::connected;
+											
+											// Enable breakpoint checking if there are active breakpoints
+											int bp_count = 0;
+											for(const auto& bpn : bpnodes) {
+												if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC) {
+													bp_count++;
+												}
+											}
+											
 											deactivate_debugger_preserve_processname();
-											// none work...
-											//SetWindowPos(AMonitors[0].hAmigaWnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE); // bring window to top
-											//BringWindowToTop(AMonitors[0].hAmigaWnd);
-											//SetForegroundWindow(AMonitors[0].hAmigaWnd);
-											//setmouseactive(0, 2);
+											
+											if(bp_count > 0) {
+												// Re-enable trace mode and debugging after deactivate cleared them
+												trace_mode = TRACE_CHECKONLY;
+												debugging = -1;
+												set_special(SPCFLAG_BRK);
+												barto_log("GDBSERVER: vCont;c - enabling TRACE_CHECKONLY for %d breakpoints, debugging=%d\n", bp_count, debugging);
+											}
+											
 											send_ack(ack);
 											return;
 										} else if(action[0] == 'r') { // keep stepping in range
@@ -1325,17 +1687,31 @@ namespace barto_gdbserver {
 									auto comma = request.find(',', strlen("Z0"));
 									if(comma != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
-										barto_log("Z0: Received breakpoint request: ELF=0x%x, baseText=0x%x\n", adr, baseText);
-										// GDB sends ELF addresses, we need to relocate them
-										// If baseText is known, calculate load offset and apply it
-										// Otherwise store the ELF address for deferred relocation
+										barto_log("Z0: Received breakpoint request: addr=0x%x, baseText=0x%x, sizeText=0x%x\n", adr, baseText, sizeText);
+										
+										// Determine if address needs relocation:
+										// 1. If address is already in loaded program range (baseText..baseText+sizeText) -> use directly
+										// 2. If address is in ELF range (0x400..0x100400) -> relocate by adding loadOffset
+										// 3. Otherwise -> use directly (raw Amiga address)
 										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
 										uaecptr relocatedAdr = adr;
-										if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+										
+										bool isInLoadedRange = (baseText > 0 && sizeText > 0 && 
+											adr >= baseText && adr < baseText + sizeText);
+										bool isInElfRange = (adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000);
+										
+										if(isInLoadedRange) {
+											// Address is already in the loaded program's memory range - use as-is
+											barto_log("Z0: Address 0x%x is in loaded range [0x%x-0x%x], using directly\n", 
+												adr, baseText, baseText + sizeText);
+											relocatedAdr = adr;
+										} else if(loadOffset > 0 && isInElfRange) {
+											// ELF address - relocate
 											relocatedAdr = adr + loadOffset;
 											barto_log("Z0: RELOCATED 0x%x -> 0x%x (loadOffset=0x%x)\n", adr, relocatedAdr, loadOffset);
 										} else {
-											barto_log("Z0: NOT relocated (loadOffset=0x%x, will defer)\n", loadOffset);
+											// Raw address or unknown - use as-is
+											barto_log("Z0: Using address 0x%x directly (loadOffset=0x%x)\n", adr, loadOffset);
 										}
 										if(adr == 0xffffffff) {
 											// step out of kickstart
@@ -1349,15 +1725,17 @@ namespace barto_gdbserver {
 											for(auto& bpn : bpnodes) {
 												if(bpn.enabled)
 													continue;
-												// Store original ELF address if no relocation yet
-												// Will be relocated later when qOffsets provides baseText
-												bpn.value1 = relocatedAdr;
-												bpn.type = BREAKPOINT_REG_PC;
-												bpn.oper = BREAKPOINT_CMP_EQUAL;
-												bpn.enabled = 1;
-												trace_mode = 0;
-												response += "OK";
-												break;
+											// Store original ELF address if no relocation yet
+											// Will be relocated later when qOffsets provides baseText
+											bpn.value1 = relocatedAdr;
+											bpn.type = BREAKPOINT_REG_PC;
+											bpn.oper = BREAKPOINT_CMP_EQUAL;
+											bpn.enabled = 1;
+											trace_mode = TRACE_CHECKONLY; // Enable breakpoint checking
+											barto_log("Z0: BP set at 0x%x, trace_mode=TRACE_CHECKONLY\n", relocatedAdr);
+											print_breakpoints();
+											response += "OK";
+											break;
 											}
 											// TODO: error when too many breakpoints!
 										}
@@ -1367,10 +1745,17 @@ namespace barto_gdbserver {
 									auto comma = request.find(',', strlen("z0"));
 									if(comma != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("z0,"), nullptr, 16);
-										// Apply same relocation as Z0
+										// Apply same relocation logic as Z0
 										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
 										uaecptr relocatedAdr = adr;
-										if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+										
+										bool isInLoadedRange = (baseText > 0 && sizeText > 0 && 
+											adr >= baseText && adr < baseText + sizeText);
+										bool isInElfRange = (adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000);
+										
+										if(isInLoadedRange) {
+											relocatedAdr = adr;
+										} else if(loadOffset > 0 && isInElfRange) {
 											relocatedAdr = adr + loadOffset;
 										}
 										if(adr == 0xffffffff) {
