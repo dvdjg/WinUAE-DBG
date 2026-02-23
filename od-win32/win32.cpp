@@ -1132,7 +1132,8 @@ static void setmouseactive2(struct AmigaMonitor *mon, int active, bool allowpaus
 			updatewinrect(mon, false);
 			mon_cursorclipped = mon->monitor_id + 1;
 			updatemouseclip(mon);
-			setcursor(mon, -30000, -30000);
+			if (!currprefs.win32_absolute_mouse)
+				setcursor(mon, -30000, -30000);
 		}
 		if (lastmouseactive != mouseactive) {
 			wait_keyrelease();
@@ -2269,6 +2270,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 			return 0;
 		} else {
 			if (!rp_mouseevent(-32768, -32768, 0, 1)) {
+				if (currprefs.win32_absolute_mouse && mouseactive && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_MBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) == 0) {
+					disablecapture();
+				}
 				if (dinput_winmouse() >= 0 && isfocus()) {
 					if (log_winmouse)
 						write_log(_T("WM_LBUTTONUP\n"));
@@ -2281,6 +2285,15 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_LBUTTONDOWN:
 	case WM_LBUTTONDBLCLK:
 		if (!rp_mouseevent(-32768, -32768, 1, 1)) {
+			/* win32_absolute_mouse: capture on any button press when over Amiga display */
+			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+				SetActiveWindow(mon->hMainWnd);
+				SetFocus(mon->hAmigaWnd);
+				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
+					setmouseactive(mon->monitor_id, (message == WM_LBUTTONDBLCLK || isfullscreen() > 0) ? 2 : 1);
+				if (dinput_winmouse() >= 0)
+					setmousebuttonstate(dinput_winmouse(), 0, 1);
+			} else
 			if (!mouseactive && !gui_active && (!mousehack_alive() || currprefs.input_tablet != TABLET_MOUSEHACK || (currprefs.input_tablet == TABLET_MOUSEHACK && !(currprefs.input_mouse_untrap & MOUSEUNTRAP_MAGIC)) || isfullscreen() > 0)) {
 				// borderless = do not capture with single-click
 				if (ignorelbutton) {
@@ -2308,6 +2321,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		return 0;
 	case WM_RBUTTONUP:
 		if (!rp_mouseevent(-32768, -32768, 0, 2)) {
+			if (currprefs.win32_absolute_mouse && mouseactive && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_MBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) == 0) {
+				disablecapture();
+			}
 			if (dinput_winmouse() >= 0 && isfocus()) {
 				if (log_winmouse)
 					write_log(_T("WM_RBUTTONUP\n"));
@@ -2318,6 +2334,14 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_RBUTTONDOWN:
 	case WM_RBUTTONDBLCLK:
 		if (!rp_mouseevent(-32768, -32768, 2, 2)) {
+			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+				SetActiveWindow(mon->hMainWnd);
+				SetFocus(mon->hAmigaWnd);
+				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
+					setmouseactive(mon->monitor_id, 1);
+				if (dinput_winmouse() >= 0)
+					setmousebuttonstate(dinput_winmouse(), 1, 1);
+			} else
 			if (dinput_winmouse() >= 0 && isfocus() > 0) {
 				if (log_winmouse)
 					write_log(_T("WM_RBUTTONDOWN\n"));
@@ -2327,6 +2351,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		return 0;
 	case WM_MBUTTONUP:
 		if (!rp_mouseevent(-32768, -32768, 0, 4)) {
+			if (currprefs.win32_absolute_mouse && mouseactive && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_MBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) == 0) {
+				disablecapture();
+			}
 			if (!(currprefs.input_mouse_untrap & MOUSEUNTRAP_MIDDLEBUTTON)) {
 				if (log_winmouse)
 					write_log(_T("WM_MBUTTONUP\n"));
@@ -2338,6 +2365,14 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_MBUTTONDOWN:
 	case WM_MBUTTONDBLCLK:
 		if (!rp_mouseevent(-32768, -32768, 4, 4)) {
+			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+				SetActiveWindow(mon->hMainWnd);
+				SetFocus(mon->hAmigaWnd);
+				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
+					setmouseactive(mon->monitor_id, 1);
+				if (dinput_winmouse() >= 0 && !(currprefs.input_mouse_untrap & MOUSEUNTRAP_MIDDLEBUTTON))
+					setmousebuttonstate(dinput_winmouse(), 2, 1);
+			} else
 			if (currprefs.input_mouse_untrap & MOUSEUNTRAP_MIDDLEBUTTON) {
 				activationtoggle(mon->monitor_id, true);
 			} else {
@@ -2350,19 +2385,34 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		}
 		return 0;
 	case WM_XBUTTONUP:
-		if (!rp_ismouseevent() && dinput_winmouse() >= 0 && isfocus()) {
-			if (log_winmouse)
-				write_log(_T("WM_XBUTTONUP %08x\n"), wParam);
-			handleXbutton(wParam, 0);
+		if (!rp_ismouseevent()) {
+			if (currprefs.win32_absolute_mouse && mouseactive && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_RBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_MBUTTON) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) == 0 && (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) == 0) {
+				disablecapture();
+			}
+			if (dinput_winmouse() >= 0 && isfocus()) {
+				if (log_winmouse)
+					write_log(_T("WM_XBUTTONUP %08x\n"), wParam);
+				handleXbutton(wParam, 0);
+			}
 			return TRUE;
 		}
 		return 0;
 	case WM_XBUTTONDOWN:
 	case WM_XBUTTONDBLCLK:
-		if (!rp_ismouseevent() && dinput_winmouse() >= 0 && isfocus() > 0) {
-			if (log_winmouse)
-				write_log(_T("WM_XBUTTONDOWN %08x\n"), wParam);
-			handleXbutton(wParam, 1);
+		if (!rp_ismouseevent()) {
+			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+				SetActiveWindow(mon->hMainWnd);
+				SetFocus(mon->hAmigaWnd);
+				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
+					setmouseactive(mon->monitor_id, 1);
+				if (dinput_winmouse() >= 0)
+					handleXbutton(wParam, 1);
+			} else
+			if (dinput_winmouse() >= 0 && isfocus() > 0) {
+				if (log_winmouse)
+					write_log(_T("WM_XBUTTONDOWN %08x\n"), wParam);
+				handleXbutton(wParam, 1);
+			}
 			return TRUE;
 		}
 		return 0;
@@ -2563,6 +2613,39 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 
 			if (rp_mouseevent(mx, my, -1, -1))
 				return 0;
+
+			/* win32_absolute_mouse: map Windows cursor to Amiga screen coords, no relative deltas, no warping */
+			if (currprefs.win32_absolute_mouse) {
+				POINT pt = { mx, my };
+				ClientToScreen(hWnd, &pt);
+				RECT *clip = &mon->amigawinclip_rect;
+				int cw = clip->right - clip->left;
+				int ch = clip->bottom - clip->top;
+				if (cw > 0 && ch > 0) {
+					int sx = pt.x, sy = pt.y;
+					/* Clamp to Amiga display area - nearest edge pixel if outside */
+					if (sx < clip->left) sx = clip->left;
+					else if (sx >= clip->right) sx = clip->right - 1;
+					if (sy < clip->top) sy = clip->top;
+					else if (sy >= clip->bottom) sy = clip->bottom - 1;
+					int ax = sx - clip->left;
+					int ay = sy - clip->top;
+					/* Scale to Amiga native resolution for 1:1 cursor matching */
+					struct vidbuf_description *vidinfo = &adisplays[mon->monitor_id].gfxvidinfo;
+					if (vidinfo->outbuffer && vidinfo->outbuffer->outwidth > 0 && vidinfo->outbuffer->outheight > 0) {
+						int aw = vidinfo->outbuffer->outwidth;
+						int ah = vidinfo->outbuffer->outheight;
+						ax = (int)((double)ax * aw / cw);
+						ay = (int)((double)ay * ah / ch);
+						if (ax >= aw) ax = aw - 1;
+						if (ay >= ah) ay = ah - 1;
+					}
+					setmousestate(dinput_winmouse() >= 0 ? dinput_winmouse() : 0, 0, ax, 1);
+					setmousestate(dinput_winmouse() >= 0 ? dinput_winmouse() : 0, 1, ay, 1);
+				}
+				/* No setcursor() - no warping. Capture/ClipCursor handled by button logic. */
+				return 0;
+			}
 
 			mx -= mon->mouseposx;
 			my -= mon->mouseposy;
@@ -4495,6 +4578,9 @@ void target_default_options (struct uae_prefs *p, int type)
 		p->win32_kbledmode = 1;
 		p->win32_uaescsimode = UAESCSI_CDEMU;
 		p->win32_borderless = 0;
+		p->win32_absolute_mouse = true;
+		if (p->input_tablet == TABLET_OFF)
+			p->input_tablet = TABLET_MOUSEHACK;
 		p->win32_blankmonitors = false;
 		p->win32_powersavedisabled = true;
 		p->win32_gui_control = false;
@@ -4620,6 +4706,7 @@ void target_save_options (struct zfile *f, struct uae_prefs *p)
 	else
 		cfgfile_target_dwrite (f, _T("rtg_vblank"), _T("%d"), p->win32_rtgvblankrate);
 	cfgfile_target_dwrite_bool (f, _T("borderless"), p->win32_borderless);
+	cfgfile_target_dwrite_bool (f, _T("absolute_mouse"), p->win32_absolute_mouse);
 	cfgfile_target_dwrite_bool (f, _T("blank_monitors"), p->win32_blankmonitors);
 	cfgfile_target_dwrite_str (f, _T("uaescsimode"), scsimode[p->win32_uaescsimode]);
 	cfgfile_target_dwrite_str (f, _T("statusbar"), statusbarmode[p->win32_statusbar]);
@@ -4766,6 +4853,7 @@ static int target_parse_option_host(struct uae_prefs *p, const TCHAR *option, co
 		|| cfgfile_yesno(option, value, _T("logfile"), &p->win32_logfile)
 		|| cfgfile_yesno(option, value, _T("networking"), &p->socket_emu)
 		|| cfgfile_yesno(option, value, _T("borderless"), &p->win32_borderless)
+		|| cfgfile_yesno(option, value, _T("absolute_mouse"), &p->win32_absolute_mouse)
 		|| cfgfile_yesno(option, value, _T("blank_monitors"), &p->win32_blankmonitors)
 		|| cfgfile_yesno(option, value, _T("active_not_captured_pause"), &p->win32_active_nocapture_pause)
 		|| cfgfile_yesno(option, value, _T("active_not_captured_nosound"), &p->win32_active_nocapture_nosound)
@@ -4988,6 +5076,9 @@ static int target_parse_option_host(struct uae_prefs *p, const TCHAR *option, co
 		return 1;
 
 	if (cfgfile_yesno(option, value, _T("start_not_captured"), &p->win32_start_uncaptured))
+		return 1;
+
+	if (cfgfile_yesno(option, value, _T("absolute_mouse"), &p->win32_absolute_mouse))
 		return 1;
 
 	if (cfgfile_yesno(option, value, _T("gui_control"), &p->win32_gui_control))
@@ -6756,6 +6847,14 @@ static int parseargs(const TCHAR *argx, const TCHAR *np, const TCHAR *np2)
 	}
 	if (!_tcscmp(arg, _T("nowindowsmouse"))) {
 		no_windowsmouse = 1;
+		return 1;
+	}
+	if (!_tcscmp(arg, _T("absolute_mouse"))) {
+		changed_prefs.win32_absolute_mouse = currprefs.win32_absolute_mouse = true;
+		return 1;
+	}
+	if (!_tcscmp(arg, _T("noabsolute_mouse"))) {
+		changed_prefs.win32_absolute_mouse = currprefs.win32_absolute_mouse = false;
 		return 1;
 	}
 	if (!_tcscmp(arg, _T("winekeyboard"))) {

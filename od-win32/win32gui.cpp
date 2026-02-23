@@ -4804,6 +4804,7 @@ static const struct miscentry misclist[] = {
 	{ 0, 1, _T("Log illegal memory accesses"), &workprefs.illegal_mem },
 	{ 0, 0, _T("Blank unused displays"), &workprefs.win32_blankmonitors },
 	{ 0, 0, _T("Start mouse uncaptured"), &workprefs.win32_start_uncaptured  },
+	{ 0, 1, _T("Absolute mouse (map cursor to Amiga screen)"), &workprefs.win32_absolute_mouse  },
 	{ 0, 0, _T("Start minimized"), &workprefs.win32_start_minimized  },
 	{ 0, 1, _T("Minimize when focus is lost"), &workprefs.win32_minimize_inactive },
 	{ 0, 1, _T("100/120Hz VSync black frame insertion"), &workprefs.lightboost_strobo },

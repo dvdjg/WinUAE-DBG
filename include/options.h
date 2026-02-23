@@ -907,6 +907,7 @@ struct uae_prefs {
 	int win32_rtgscaleaspectratio;
 	int win32_rtgvblankrate;
 	bool win32_borderless;
+	bool win32_absolute_mouse;
 	bool win32_ctrl_F11_is_quit;
 	bool win32_automount_removable;
 	bool win32_automount_drives;

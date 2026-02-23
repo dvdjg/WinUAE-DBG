@@ -9828,7 +9828,9 @@ void setmousestate (int mouse, int axis, int data, int isabs)
 	}
 
 	*mouse_p = (*mouse_p) - (*oldm_p);
-	*oldm_p = 0;
+	/* For absolute mode, keep oldm_p = data for next delta calc; for relative, reset */
+	if (!isabs)
+		*oldm_p = 0;
 
 	v = (int)d;
 	fract[mouse][axis] += d - v;
