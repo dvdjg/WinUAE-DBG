@@ -81,6 +81,10 @@ namespace barto_gdbserver {
 	void barto_log(const char* format, ...);
 	void barto_log(const wchar_t* format, ...);
 
+	// Log file for debugging (writable via monitor logfile command)
+	static FILE* log_file = nullptr;
+	static std::string log_file_path;
+
 	static std::string string_replace_all(const std::string& str, const std::string& search, const std::string& replace) {
 		std::string copy(str);
 		size_t start = 0;
@@ -151,6 +155,12 @@ namespace barto_gdbserver {
 			ret += (char)v;
 		}
 		return ret;
+	}
+
+	static std::string to_hex_addr(uaecptr addr) {
+		char buf[16];
+		snprintf(buf, sizeof(buf), "%08x", addr);
+		return std::string(buf);
 	}
 
 	static std::string to_hex(const std::string& s) {
@@ -227,22 +237,30 @@ namespace barto_gdbserver {
 	
 	// Relocate all existing breakpoints when baseText is calculated
 	void relocate_breakpoints() {
+		barto_log("RELOC: relocate_breakpoints() called. baseText=0x%x, pending=%d\n", 
+			baseText, (int)breakpoint_elf_addresses.size());
 		if(baseText < ELF_TEXT_BASE) {
+			barto_log("RELOC: SKIP - baseText(0x%x) < ELF_TEXT_BASE(0x%x)\n", baseText, ELF_TEXT_BASE);
 			return;
 		}
 		uaecptr loadOffset = baseText - ELF_TEXT_BASE;
+		barto_log("RELOC: loadOffset = 0x%x\n", loadOffset);
+		int relocated = 0;
 		for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
 			uaecptr elfAddr = breakpoint_elf_addresses[i];
 			if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000) {
 				uaecptr relocatedAddr = elfAddr + loadOffset;
 				for(auto& bpn : bpnodes) {
 					if(bpn.enabled && bpn.value1 == elfAddr) {
+						barto_log("RELOC: BP[%d] 0x%x -> 0x%x\n", (int)i, elfAddr, relocatedAddr);
 						bpn.value1 = relocatedAddr;
+						relocated++;
 						break;
 					}
 				}
 			}
 		}
+		barto_log("RELOC: Done. Relocated %d breakpoints\n", relocated);
 	}
 	
 	std::string profile_outname;
@@ -382,6 +400,30 @@ namespace barto_gdbserver {
 			static TCHAR empty[2] = { 0 };
 			setconsolemode(empty, 1);
 			consoleopen = 1;
+
+			// Auto-open log file for debugging
+			if(!log_file) {
+				char temp_path[MAX_PATH];
+				if(GetTempPathA(MAX_PATH, temp_path)) {
+					log_file_path = std::string(temp_path) + "winuae-gdb.log";
+					log_file = fopen(log_file_path.c_str(), "w");
+				}
+			}
+
+			// VERSION IDENTIFICATION - Always log at startup
+			barto_log("========================================\n");
+			barto_log("GDBSERVER: WinUAE-DBG v2.0 (axewater fork)\n");
+			barto_log("GDBSERVER: Build: %s %s\n", __DATE__, __TIME__);
+#ifdef _WIN64
+			barto_log("GDBSERVER: Architecture: x64\n");
+#else
+			barto_log("GDBSERVER: Architecture: x86\n");
+#endif
+			barto_log("GDBSERVER: ELF_TEXT_BASE=0x%x\n", ELF_TEXT_BASE);
+			if(log_file) {
+				barto_log("GDBSERVER: Log file: %s\n", log_file_path.c_str());
+			}
+			barto_log("========================================\n");
 
 			activate_debugger();
 			initialize_memwatch(0);
@@ -992,20 +1034,171 @@ namespace barto_gdbserver {
 											response += "OK";
 										} else { response += "E01"; }
 								} else if(cmd == "offset" || cmd.substr(0, strlen("offset ")) == "offset ") {
-									// syntax: monitor offset
-									// Returns: Text=<baseText>;Data=<baseData>;Bss=<baseBss>;LoadOffset=<loadOffset>;SizeText=<sizeText>
-									// This provides relocation information for debugger extensions
-									char info[256];
-									uaecptr loadOff = (baseText != 0) ? (baseText - ELF_TEXT_BASE) : 0;
-									// Find data and bss sections from sections vector
-									uaecptr dataBase = 0, bssBase = 0;
-									if(sections.size() >= 2) dataBase = sections[1];
-									if(sections.size() >= 3) bssBase = sections[2];
-									snprintf(info, sizeof(info), 
-										"Text=%x;Data=%x;Bss=%x;LoadOffset=%x;SizeText=%x",
-										baseText, dataBase, bssBase, loadOff, sizeText);
-									barto_log("GDBSERVER: monitor offset -> %s\n", info);
-									response += to_hex(std::string(info));
+									// syntax: monitor offset [set <address>]
+									// Without args: Returns Text=<baseText>;Data=<baseData>;Bss=<baseBss>;LoadOffset=<loadOffset>;SizeText=<sizeText>
+									// With "set <addr>": Sets baseText manually and relocates breakpoints
+									auto rest = cmd.length() > 7 ? cmd.substr(7) : "";
+									while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+									
+									if(rest.substr(0, 4) == "set ") {
+										// Parse and set baseText manually
+										auto addr_str = rest.substr(4);
+										while(!addr_str.empty() && addr_str[0] == ' ') addr_str = addr_str.substr(1);
+										uaecptr new_baseText = strtoul(addr_str.c_str(), nullptr, 16);
+										barto_log("OFFSET: Manual set baseText=0x%x (was 0x%x)\n", new_baseText, baseText);
+										baseText = new_baseText;
+										sizeText = 0x100000; // Assume 1MB max
+										// Now relocate any pending breakpoints
+										relocate_breakpoints();
+										response += "OK";
+									} else {
+										// Read mode
+										char info[256];
+										uaecptr loadOff = (baseText != 0) ? (baseText - ELF_TEXT_BASE) : 0;
+										// Find data and bss sections from sections vector
+										uaecptr dataBase = 0, bssBase = 0;
+										if(sections.size() >= 2) dataBase = sections[1];
+										if(sections.size() >= 3) bssBase = sections[2];
+										snprintf(info, sizeof(info), 
+											"Text=%x;Data=%x;Bss=%x;LoadOffset=%x;SizeText=%x",
+											baseText, dataBase, bssBase, loadOff, sizeText);
+										barto_log("GDBSERVER: monitor offset -> %s\n", info);
+										response += to_hex(std::string(info));
+									}
+								} else if(cmd.substr(0, strlen("logfile")) == "logfile") {
+									// DEBUGGING: Enable logging to file
+									// syntax: monitor logfile <path> - start logging to file
+									// syntax: monitor logfile off - stop logging
+									// syntax: monitor logfile - show current status
+									auto rest = cmd.length() > 7 ? cmd.substr(7) : "";
+									while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+									
+									if(rest.empty()) {
+										// Status
+										std::string status = log_file ? ("Logging to: " + log_file_path) : "Logging disabled";
+										response += to_hex(status);
+									} else if(rest == "off") {
+										if(log_file) {
+											barto_log("LOGFILE: Closing log file\n");
+											fclose(log_file);
+											log_file = nullptr;
+											log_file_path.clear();
+										}
+										response += "OK";
+									} else {
+										// Open new log file
+										if(log_file) {
+											fclose(log_file);
+											log_file = nullptr;
+										}
+										log_file_path = rest;
+										log_file = fopen(log_file_path.c_str(), "w");
+										if(log_file) {
+											barto_log("LOGFILE: Opened '%s' for logging\n", log_file_path.c_str());
+											response += "OK";
+										} else {
+											log_file_path.clear();
+											response += "E01";
+										}
+									}
+								} else if(cmd == "breakpoints" || cmd == "bp") {
+									// DEBUGGING: List all active breakpoints with their addresses
+									// syntax: monitor breakpoints  (or: monitor bp)
+									std::string output = "Breakpoints:\n";
+									output += "  baseText=0x" + to_hex_addr(baseText) + "\n";
+									output += "  ELF_TEXT_BASE=0x" + to_hex_addr(ELF_TEXT_BASE) + "\n";
+									output += "  loadOffset=0x" + to_hex_addr(baseText >= ELF_TEXT_BASE ? (baseText - ELF_TEXT_BASE) : 0) + "\n";
+									output += "  pending_elf_addresses=" + std::to_string(breakpoint_elf_addresses.size()) + "\n";
+									int bp_count = 0;
+									for(const auto& bpn : bpnodes) {
+										if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC) {
+											char line[128];
+											snprintf(line, sizeof(line), "  BP[%d]: addr=0x%08x\n", bp_count++, bpn.value1);
+											output += line;
+										}
+									}
+									if(bp_count == 0) output += "  (no active breakpoints)\n";
+									// Also show pending ELF addresses
+									for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
+										char line[128];
+										snprintf(line, sizeof(line), "  PENDING_ELF[%d]: 0x%08x\n", (int)i, breakpoint_elf_addresses[i]);
+										output += line;
+									}
+									barto_log("GDBSERVER: monitor breakpoints\n%s", output.c_str());
+									response += to_hex(output);
+								} else if(cmd.substr(0, strlen("findcode")) == "findcode") {
+									// Search for a hex pattern in memory to find where program is loaded
+									// syntax: monitor findcode <hex_bytes> [start_addr] [end_addr]
+									// Example: monitor findcode 4fefffe048e7 c00000 d00000
+									auto args = cmd.substr(strlen("findcode"));
+									while(!args.empty() && args[0] == ' ') args = args.substr(1);
+									
+									// Parse hex pattern
+									std::vector<uint8_t> pattern;
+									std::string hex_str;
+									size_t space1 = args.find(' ');
+									if(space1 != std::string::npos) {
+										hex_str = args.substr(0, space1);
+										args = args.substr(space1 + 1);
+									} else {
+										hex_str = args;
+										args.clear();
+									}
+									
+									for(size_t i = 0; i + 1 < hex_str.length(); i += 2) {
+										pattern.push_back((uint8_t)strtoul(hex_str.substr(i, 2).c_str(), nullptr, 16));
+									}
+									
+									if(pattern.empty()) {
+										response += to_hex(std::string("Usage: monitor findcode <hex_pattern> [start] [end]\n"));
+									} else {
+										// Parse optional start/end addresses
+										uaecptr start_addr = 0x400;     // Skip zero page
+										uaecptr end_addr = 0x200000;    // Chip RAM by default
+										
+										while(!args.empty() && args[0] == ' ') args = args.substr(1);
+										if(!args.empty()) {
+											size_t space2 = args.find(' ');
+											if(space2 != std::string::npos) {
+												start_addr = strtoul(args.substr(0, space2).c_str(), nullptr, 16);
+												end_addr = strtoul(args.substr(space2 + 1).c_str(), nullptr, 16);
+											} else {
+												start_addr = strtoul(args.c_str(), nullptr, 16);
+											}
+										}
+										
+										barto_log("FINDCODE: Searching for %d-byte pattern in 0x%x-0x%x\n",
+											(int)pattern.size(), start_addr, end_addr);
+										
+										std::string output = "Searching for pattern...\n";
+										int found_count = 0;
+										
+										for(uaecptr addr = start_addr; addr < end_addr - pattern.size() && found_count < 10; addr++) {
+											bool match = true;
+											for(size_t i = 0; i < pattern.size() && match; i++) {
+												if(get_byte_debug(addr + i) != pattern[i]) {
+													match = false;
+												}
+											}
+											if(match) {
+												char line[64];
+												snprintf(line, sizeof(line), "  Found at 0x%08x\n", addr);
+												output += line;
+												barto_log("FINDCODE: Found at 0x%x\n", addr);
+												found_count++;
+												addr += pattern.size() - 1; // Skip past this match
+											}
+										}
+										
+										if(found_count == 0) {
+											output += "  (no matches found)\n";
+										} else {
+											char line[64];
+											snprintf(line, sizeof(line), "Total: %d matches\n", found_count);
+											output += line;
+										}
+										response += to_hex(output);
+									}
 								} else if(cmd.substr(0, strlen("warp")) == "warp") {
 									// MCP-WINUAE-EMU EXTENSION: Warp/turbo mode control
 									// syntax: monitor warp <0|1|on|off|status>
@@ -1132,6 +1325,7 @@ namespace barto_gdbserver {
 									auto comma = request.find(',', strlen("Z0"));
 									if(comma != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
+										barto_log("Z0: Received breakpoint request: ELF=0x%x, baseText=0x%x\n", adr, baseText);
 										// GDB sends ELF addresses, we need to relocate them
 										// If baseText is known, calculate load offset and apply it
 										// Otherwise store the ELF address for deferred relocation
@@ -1139,6 +1333,9 @@ namespace barto_gdbserver {
 										uaecptr relocatedAdr = adr;
 										if(loadOffset > 0 && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
 											relocatedAdr = adr + loadOffset;
+											barto_log("Z0: RELOCATED 0x%x -> 0x%x (loadOffset=0x%x)\n", adr, relocatedAdr, loadOffset);
+										} else {
+											barto_log("Z0: NOT relocated (loadOffset=0x%x, will defer)\n", loadOffset);
 										}
 										if(adr == 0xffffffff) {
 											// step out of kickstart
@@ -1660,6 +1857,11 @@ start_profile:
 		vsprintf(buffer, format, parms);
 		OutputDebugStringA(buffer);
 		output(buffer);
+		// Also write to log file if enabled
+		if(log_file) {
+			fputs(buffer, log_file);
+			fflush(log_file);
+		}
 		va_end(parms);
 	}
 
@@ -1840,6 +2042,35 @@ start_profile:
 					}
 				}
 			}
+			// AUTO-DETECTION: If PC is in user range and we have unrelocated ELF breakpoints,
+			// try to detect baseText automatically by checking if PC matches any ELF BP + offset
+			if(baseText < ELF_TEXT_BASE && breakpoint_elf_addresses.size() > 0 && pc >= 0x1000 && pc < 0x1000000) {
+				// PC is in potential user code range, check if it could be a relocated ELF address
+				for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
+					uaecptr elfAddr = breakpoint_elf_addresses[i];
+					if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000 && pc > elfAddr) {
+						// Calculate what baseText would be if this ELF address was at PC
+						uaecptr potential_loadOffset = pc - elfAddr;
+						uaecptr potential_baseText = ELF_TEXT_BASE + potential_loadOffset;
+						
+						// Validate: the load offset should be reasonable
+						// Programs typically load in Chip RAM (0x0-0x200000) or Fast RAM (0xC00000+)
+						// The offset should move addresses from ELF base (0x400) to user RAM
+						bool valid_range = (potential_baseText >= 0x1000 && potential_baseText < 0x200000) ||  // Chip RAM
+						                   (potential_baseText >= 0xC00000 && potential_baseText < 0x1000000); // Fast RAM
+						
+						if(valid_range) {
+							barto_log("AUTODETECT: PC=0x%x could match ELF BP 0x%x with baseText=0x%x (loadOffset=0x%x)\n",
+								pc, elfAddr, potential_baseText, potential_loadOffset);
+							baseText = potential_baseText;
+							sizeText = 0x100000;
+							relocate_breakpoints();
+							break;
+						}
+					}
+				}
+			}
+
 			for(const auto& bpn : bpnodes) {
 				// ORIGINAL BARTMAN CODE: GDB sends already-relocated addresses
 				// The modified GDB (m68k-amiga-elf-gdb) applies qOffsets relocation internally
