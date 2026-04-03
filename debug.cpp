@@ -7892,7 +7892,9 @@ void debug (void)
 								while (seglist) {
 									uae_u32 size = get_long_debug (seglist - 4) - 4;
 									if (pc >= (seglist + 4) && pc < (seglist + size)) {
-										bp = -1; // BARTO: was: bp = i + 1
+										// In process range: do not force stop; only stop on breakpoint (bpnum >= 0).
+										// bp = -1 made !bp false so we never continued (stopped every instruction).
+										bp = 0;
 										break;
 									}
 									seglist = BPTR2APTR(get_long_debug (seglist));
