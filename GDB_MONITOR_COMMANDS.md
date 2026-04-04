@@ -12,6 +12,17 @@ Capture the current emulator display to a PNG file.
 - **Returns**: Hex-encoded text with dimensions and path on success
 - **Example**: `monitor screenshot C:\temp\frame.png`
 
+### memcfg
+
+Dump the currently mapped Amiga memory banks known to WinUAE-DBG.
+
+- **Returns**: Hex-encoded UTF-8 text with one line per bank, including `start`, `size`, `reserved`, `flags`, and host `base` pointer.
+- **Use cases**:
+  - confirm Chip/Bogo/Fast RAM before a fixed-address load
+  - verify that a battery/test profile really mapped Fast RAM where expected
+  - debug collisions between OS-loaded code and direct "metal" uploads
+- **Example**: `monitor memcfg`
+
 ### disasm \<addr\> [count]
 
 Disassemble m68k instructions at the given address using WinUAE’s built-in disassembler.

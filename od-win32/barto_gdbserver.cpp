@@ -173,6 +173,67 @@ namespace barto_gdbserver {
 		return ret;
 	}
 
+	static bool gdb_try_read_byte(uaecptr adr, uae_u8& value) {
+		if (debug_safe_addr(adr, 1)) {
+			addrbank* ad = &get_mem_bank(adr);
+			if (ad) {
+				if (ad->flags & (ABFLAG_RAM | ABFLAG_ROM | ABFLAG_ROMIN)) {
+					if (uae_u8* real = get_real_address_debug(adr)) {
+						value = *real;
+						return true;
+					}
+				}
+				value = ad->bget(adr);
+				return true;
+			}
+		} else {
+			// Some RAM banks, including Z2 Fast RAM, can be valid for bget/check even
+			// when debug_safe_addr() rejects them in this debugger context.
+			addrbank* ad = &get_mem_bank(adr);
+			if (ad && ad->check(adr, 1) && (ad->flags & (ABFLAG_RAM | ABFLAG_ROM | ABFLAG_ROMIN | ABFLAG_SAFE))) {
+				if (ad->flags & (ABFLAG_RAM | ABFLAG_ROM | ABFLAG_ROMIN)) {
+					if (uae_u8* real = get_real_address_debug(adr)) {
+						value = *real;
+						return true;
+					}
+				}
+				value = ad->bget(adr);
+				return true;
+			}
+		}
+
+		if ((adr >= 0xdff000) && (adr < 0xdff1fe)) {
+			static uae_u8* custom_data = nullptr;
+			static size_t custom_save_length = 0;
+			if (custom_data == nullptr) {
+				custom_data = save_custom(&custom_save_length, 0, 1);
+			}
+			int idx = (adr & 0x1ff) + 4;
+			if ((idx > 0) && (idx < custom_save_length)) {
+				value = custom_data[idx];
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	static void append_mem_bank_info(std::string& output, const char* label, const addrbank& bank) {
+		char line[256];
+		snprintf(
+			line,
+			sizeof(line),
+			"%s: start=%08x size=%08x reserved=%08x flags=%08x base=%p\n",
+			label,
+			bank.start,
+			(uae_u32)bank.allocated_size,
+			(uae_u32)bank.reserved_size,
+			bank.flags,
+			bank.baseaddr
+		);
+		output += line;
+	}
+
 /*	#pragma comment(lib, "Bcrypt.lib")
 	#ifndef NT_SUCCESS
 		#define NT_SUCCESS(Status) ((NTSTATUS)(Status) >= 0)
@@ -226,6 +287,7 @@ namespace barto_gdbserver {
 	SOCKET gdbconn{ INVALID_SOCKET };
 	char socketaddr[sizeof(SOCKADDR_INET)];
 	bool useAck{ true };
+	bool keep_listener_after_disconnect{};
 	uint32_t baseText{};
 	uint32_t sizeText{};
 	uint32_t systemStackLower{}, systemStackUpper{};
@@ -616,6 +678,8 @@ namespace barto_gdbserver {
 			if(log_file) {
 				barto_log("GDBSERVER: Log file: %s\n", log_file_path.c_str());
 			}
+			keep_listener_after_disconnect = getenv("WINUAE_GDB_PERSIST_LISTENER") && atoi(getenv("WINUAE_GDB_PERSIST_LISTENER")) != 0;
+			barto_log("GDBSERVER: keep_listener_after_disconnect=%d\n", keep_listener_after_disconnect ? 1 : 0);
 			barto_log("========================================\n");
 
 			activate_debugger();
@@ -637,7 +701,10 @@ namespace barto_gdbserver {
 			}
 
 			// call as early as possible to avoid delays with GDB having to retry to connect...
-			listen();
+			if(gdbsocket == INVALID_SOCKET)
+				listen();
+			else
+				barto_log("GDBSERVER: reusing existing listen socket after disconnect\n");
 		}
 
 		return true;
@@ -1259,7 +1326,7 @@ namespace barto_gdbserver {
 											disk_eject(2);
 											response += "OK";
 										} else { response += "E01"; }
-									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df3" && cmd[3] == ' ') {
+								} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df3" && cmd[3] == ' ') {
 										auto rest = cmd.substr(4);
 										while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
 										if(rest.substr(0, 7) == "insert ") {
@@ -1276,6 +1343,21 @@ namespace barto_gdbserver {
 											disk_eject(3);
 											response += "OK";
 										} else { response += "E01"; }
+								} else if(cmd == "memcfg" || cmd == "membanks") {
+									std::string output;
+									append_mem_bank_info(output, "chip", chipmem_bank);
+									append_mem_bank_info(output, "bogo", bogomem_bank);
+									for (int i = 0; i < MAX_RAM_BOARDS; ++i) {
+										char label[32];
+										snprintf(label, sizeof(label), "fast%d", i);
+										append_mem_bank_info(output, label, fastmem_bank[i]);
+									}
+									for (int i = 0; i < MAX_RAM_BOARDS; ++i) {
+										char label[32];
+										snprintf(label, sizeof(label), "z3fast%d", i);
+										append_mem_bank_info(output, label, z3fastmem_bank[i]);
+									}
+									response += to_hex(output);
 								} else if(cmd == "offset" || cmd.substr(0, strlen("offset ")) == "offset ") {
 									// syntax: monitor offset [set <address>]
 									// Without args: Returns Text=<baseText>;Data=<baseData>;Bss=<baseBss>;LoadOffset=<loadOffset>;SizeText=<sizeText>
@@ -1887,29 +1969,11 @@ namespace barto_gdbserver {
 										std::string mem;
 										uaecptr adr = strtoul(request.data() + strlen("m"), nullptr, 16);
 										int len = strtoul(request.data() + comma + 1, nullptr, 16);
-										addrbank* ad;
-										uae_u8 *custom_data = NULL;
-										size_t custom_save_length = 0;
 										barto_log("GDBSERVER: want 0x%x bytes at 0x%x\n", len, adr);
 										while(len-- > 0) {
-											int data = -1;
-											if (debug_safe_addr(adr, 1)) {
-												ad = &get_mem_bank(adr);
-												data = ad->bget(adr);
-											} else {
-												if ((adr >= 0xdff000) && (adr < 0xdff1fe)) {
-													if (custom_data == NULL) {
-														custom_data = save_custom(&custom_save_length, 0, 1);
-													}
-													int idx = (adr & 0x1ff) + 4;
-													if ((idx > 0) && (idx < custom_save_length)) {
-														data = custom_data[idx];
-													}
-												}
-											}
-
-											if(data == -1) {
-												barto_log("GDBSERVER: error reading memory at 0x%x\n", len, adr);
+											uae_u8 data = 0;
+											if(!gdb_try_read_byte(adr, data)) {
+												barto_log("GDBSERVER: error reading memory at 0x%x\n", adr);
 												response += "E01";
 												mem.clear();
 												break;
@@ -1941,8 +2005,13 @@ namespace barto_gdbserver {
 		}
 		if(!is_connected()) {
 			debugger_state = state::inited;
-			close();
-			deactivate_debugger();
+			if(keep_listener_after_disconnect && gdbsocket != INVALID_SOCKET) {
+				barto_log("GDBSERVER: client disconnected, keeping listen socket open for future reconnect\n");
+				deactivate_debugger_preserve_processname();
+			} else {
+				close();
+				deactivate_debugger();
+			}
 		}
 	}
 
