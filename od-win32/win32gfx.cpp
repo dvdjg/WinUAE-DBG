@@ -1,4 +1,4 @@
-﻿/*
+/*
 /*
 * UAE - The Un*x Amiga Emulator
 *
@@ -2317,7 +2317,7 @@ int check_prefs_changed_gfx(void)
 					currprefs.gfx_api_options = changed_prefs.gfx_api_options;
 					d3d_select(&currprefs);
 				}
-				graphics_init(dontcapture ? false : true);
+				graphics_init((dontcapture || currprefs.win32_absolute_mouse) ? false : true);
 			}
 		}
 

@@ -2285,14 +2285,17 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_LBUTTONDOWN:
 	case WM_LBUTTONDBLCLK:
 		if (!rp_mouseevent(-32768, -32768, 1, 1)) {
-			/* win32_absolute_mouse: capture on any button press when over Amiga display */
-			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+				/* win32_absolute_mouse: position from WM_MOUSEMOVE; do not SetCapture/ClipCursor on click */
+			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
 				SetFocus(mon->hAmigaWnd);
-				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
-					setmouseactive(mon->monitor_id, (message == WM_LBUTTONDBLCLK || isfullscreen() > 0) ? 2 : 1);
-				if (dinput_winmouse() >= 0)
-					setmousebuttonstate(dinput_winmouse(), 0, 1);
+				if (dinput_winmouse() >= 0) {
+					if (message == WM_LBUTTONDBLCLK && hGUIWnd) {
+						SetForegroundWindow(hGUIWnd);
+					} else {
+						setmousebuttonstate(dinput_winmouse(), 0, 1);
+					}
+				}
 			} else
 			if (!mouseactive && !gui_active && (!mousehack_alive() || currprefs.input_tablet != TABLET_MOUSEHACK || (currprefs.input_tablet == TABLET_MOUSEHACK && !(currprefs.input_mouse_untrap & MOUSEUNTRAP_MAGIC)) || isfullscreen() > 0)) {
 				// borderless = do not capture with single-click
@@ -2334,11 +2337,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_RBUTTONDOWN:
 	case WM_RBUTTONDBLCLK:
 		if (!rp_mouseevent(-32768, -32768, 2, 2)) {
-			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
 				SetFocus(mon->hAmigaWnd);
-				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
-					setmouseactive(mon->monitor_id, 1);
 				if (dinput_winmouse() >= 0)
 					setmousebuttonstate(dinput_winmouse(), 1, 1);
 			} else
@@ -2365,11 +2366,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_MBUTTONDOWN:
 	case WM_MBUTTONDBLCLK:
 		if (!rp_mouseevent(-32768, -32768, 4, 4)) {
-			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
 				SetFocus(mon->hAmigaWnd);
-				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
-					setmouseactive(mon->monitor_id, 1);
 				if (dinput_winmouse() >= 0 && !(currprefs.input_mouse_untrap & MOUSEUNTRAP_MIDDLEBUTTON))
 					setmousebuttonstate(dinput_winmouse(), 2, 1);
 			} else
@@ -2400,11 +2399,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 	case WM_XBUTTONDOWN:
 	case WM_XBUTTONDBLCLK:
 		if (!rp_ismouseevent()) {
-			if (currprefs.win32_absolute_mouse && !mouseactive && !gui_active) {
+			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
 				SetFocus(mon->hAmigaWnd);
-				if (!pause_emulation || currprefs.win32_active_nocapture_pause)
-					setmouseactive(mon->monitor_id, 1);
 				if (dinput_winmouse() >= 0)
 					handleXbutton(wParam, 1);
 			} else
@@ -2643,7 +2640,7 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 					setmousestate(dinput_winmouse() >= 0 ? dinput_winmouse() : 0, 0, ax, 1);
 					setmousestate(dinput_winmouse() >= 0 ? dinput_winmouse() : 0, 1, ay, 1);
 				}
-				/* No setcursor() - no warping. Capture/ClipCursor handled by button logic. */
+				/* No setcursor() - no warping. No default SetCapture (see WM_*BUTTON*). */
 				return 0;
 			}
 

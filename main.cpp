@@ -1263,7 +1263,9 @@ static int real_main2 (int argc, TCHAR **argv)
 
 	gui_update ();
 
-	if (graphics_init (true)) {
+	/* win32_absolute_mouse maps the OS cursor in WM_MOUSEMOVE without needing ClipCursor;
+	 * avoid startup mouse capture so the pointer is not trapped in the viewport by default. */
+	if (graphics_init (!currprefs.win32_absolute_mouse)) {
 #ifdef DEBUGGER
 		setup_brkhandler ();
 		if (currprefs.start_debugger && debuggable ())

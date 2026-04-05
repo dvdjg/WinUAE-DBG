@@ -1,6 +1,7 @@
 # Test script for absolute mouse mode
 # Run: powershell -ExecutionPolicy Bypass -File scripts\test-mouse-absolute.ps1
-# Requires: WinUAE compiled with win32_absolute_mouse default = true
+# Requires: WinUAE compiled with win32_absolute_mouse default = true.
+# Absolute mode no longer auto-captures the cursor on click or at startup.
 
 $ErrorActionPreference = "Stop"
 $bin = Join-Path $PSScriptRoot "..\bin\winuae-gdb.exe"
