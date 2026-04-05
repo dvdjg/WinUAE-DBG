@@ -1120,17 +1120,21 @@ namespace barto_gdbserver {
 										if(screenshot_prepare(monid, vb) == 1) {
 											auto sbi = screenshot_get_bi();
 											auto sbi_bits = (const uint8_t*)screenshot_get_bits();
-											if(sbi && sbi_bits && sbi->bmiHeader.biBitCount == 24) {
+											if(sbi && sbi_bits && (sbi->bmiHeader.biBitCount == 24 || sbi->bmiHeader.biBitCount == 32)) {
 												const auto w = sbi->bmiHeader.biWidth;
-												const auto h = sbi->bmiHeader.biHeight;
-												const auto pitch = sbi->bmiHeader.biSizeImage / sbi->bmiHeader.biHeight;
-												// flip vertically and swap BGR -> RGB
+												const auto signedHeight = sbi->bmiHeader.biHeight;
+												const auto h = signedHeight < 0 ? -signedHeight : signedHeight;
+												const auto bytesPerPixel = sbi->bmiHeader.biBitCount / 8;
+												const auto pitch = sbi->bmiHeader.biSizeImage / h;
+												// Normalize to top-down RGB output. Source is usually BGR/BGRA.
 												auto bits = std::make_unique<uint8_t[]>(w * 3 * h);
 												for(int y = 0; y < h; y++) {
+													const int srcY = signedHeight > 0 ? (h - 1 - y) : y;
 													for(int x = 0; x < w; x++) {
-														bits[y * w * 3 + x * 3 + 0] = sbi_bits[(h - 1 - y) * pitch + x * 3 + 2];
-														bits[y * w * 3 + x * 3 + 1] = sbi_bits[(h - 1 - y) * pitch + x * 3 + 1];
-														bits[y * w * 3 + x * 3 + 2] = sbi_bits[(h - 1 - y) * pitch + x * 3 + 0];
+														const int srcIndex = srcY * pitch + x * bytesPerPixel;
+														bits[y * w * 3 + x * 3 + 0] = sbi_bits[srcIndex + 2];
+														bits[y * w * 3 + x * 3 + 1] = sbi_bits[srcIndex + 1];
+														bits[y * w * 3 + x * 3 + 2] = sbi_bits[srcIndex + 0];
 													}
 												}
 												// write PNG to file using stb_image_write

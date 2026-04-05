@@ -1229,7 +1229,7 @@ static void winuae_active(struct AmigaMonitor *mon, HWND hwnd, int minimized)
 	getcapslock ();
 	wait_keyrelease ();
 	inputdevice_acquire (TRUE);
-	if ((isfullscreen () > 0 || currprefs.win32_capture_always) && !gui_active)
+	if ((isfullscreen () > 0 || currprefs.win32_capture_always) && !gui_active && !currprefs.win32_absolute_mouse)
 		setmouseactive(mon->monitor_id, 1);
 #ifdef LOGITECHLCD
 	if (!minimized)
@@ -2886,7 +2886,9 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 				} else if (num == 4) {
 					if (pause_emulation) {
 						resumepaused(9);
-						setmouseactive(mon->monitor_id, 1);
+						if (!currprefs.win32_absolute_mouse) {
+							setmouseactive(mon->monitor_id, 1);
+						}
 					}
 				}
 				return TRUE;
@@ -8562,5 +8564,4 @@ int PASCAL wWinMain (HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdL
 	//SetThreadAffinityMask (thread, original_affinity);
 	return FALSE;
 }
-
 
