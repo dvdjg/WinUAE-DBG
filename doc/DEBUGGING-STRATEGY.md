@@ -2,6 +2,8 @@
 
 Este documento describe cómo depurar de forma autónoma desarrollos en WinUAE-DBG, especialmente cambios que afectan a entrada (ratón, teclado), display o interacción con el hardware virtualizado del Amiga.
 
+Índice general de la carpeta: [README.md](README.md).
+
 ---
 
 ## 1. Herramientas disponibles
@@ -117,7 +119,7 @@ Script: `powershell -File scripts\test-mouse-absolute.ps1`
 
 ## 7. Referencias
 
-- `doc/MOUSE-SYSTEMS.md`: descripción de los sistemas de ratón.
+- [MOUSE-SYSTEMS.md](MOUSE-SYSTEMS.md): descripción de los sistemas de ratón.
 - `od-win32/win32.cpp`: WM_MOUSEMOVE, manejadores de botones.
 - `od-win32/dinput.cpp`: RawInput (RIM_TYPEMOUSE), DirectInput (GetDeviceData).
 - `inputdevice.cpp`: `setmousestate` (no resetear `old_axis` cuando `isabs=1`), `mouse_delta`, `joymousecounter`.

@@ -115,7 +115,7 @@ Este documento recopila todo lo observado durante el desarrollo del modo ratón 
 | `od-win32/dinput.cpp` | Bloqueo de RawInput/DirectInput cuando win32_absolute_mouse |
 | `Cursor-Amiga-C/engine/src/input_devices.c` | engine_input_devices_mouse_left/right |
 | `Cursor-Amiga-C/engine/src/input.c` | engine_mouse_left/right |
-| `doc/MOUSE-SYSTEMS.md` | Arquitectura general del sistema de ratón |
+| [MOUSE-SYSTEMS.md](MOUSE-SYSTEMS.md) | Arquitectura general del sistema de ratón |
 
 ---
 

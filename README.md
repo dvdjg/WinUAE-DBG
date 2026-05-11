@@ -2,7 +2,7 @@
 
 Fork de WinUAE con servidor GDB y comandos monitor extendidos para depuración remota de programas Amiga. Compatible con [mcp-winuae-emu](https://github.com/axewater/mcp-winuae-emu) (MCP server para Cursor/Claude).
 
-**Documentación del proyecto:** para no perder el contexto de todo lo hecho desde el clon (bugs corregidos, build.bat, logs, upstream), ver **[docs/HISTORIAL-CAMBIOS.md](docs/HISTORIAL-CAMBIOS.md)**.
+**Documentación del proyecto:** índice en **[doc/README.md](doc/README.md)**. Historial del fork: **[doc/HISTORIAL-CAMBIOS.md](doc/HISTORIAL-CAMBIOS.md)**. Visión Bartman / vscode-amiga-debug / MCP e IA: **[doc/BARTMAN-VSCODE-Y-EVOLUCION.md](doc/BARTMAN-VSCODE-Y-EVOLUCION.md)**.
 
 ## Requisitos del sistema
 
@@ -183,7 +183,8 @@ Pasos para desinstalar:
 
 | Documento | Contenido |
 |----------|-----------|
-| [docs/HISTORIAL-CAMBIOS.md](docs/HISTORIAL-CAMBIOS.md) | Historial de cambios desde el clon: commits, bug de breakpoints, logs de diagnóstico, build.bat, MCP. |
+| [doc/README.md](doc/README.md) | Índice de toda la documentación técnica (depuración, ratón, relocalización, Bartman/MCP). |
+| [doc/HISTORIAL-CAMBIOS.md](doc/HISTORIAL-CAMBIOS.md) | Historial de cambios desde el clon: commits, bug de breakpoints, logs de diagnóstico, build.bat, MCP. |
 | [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) | Comandos monitor GDB (screenshot, disasm, input, reset, etc.). |
 
 ---
