@@ -108,7 +108,7 @@ build.bat
 
 (Con VS 2022/2019 puede que debas cambiar el *Platform Toolset* del proyecto a **v143** o **v142**.)
 
-El script llama a `vcvarsall.bat` (x86 o x64) para configurar el entorno y luego MSBuild. Salida: **winuae-gdb.exe** (Win32, 32-bit) o **winuae-gdb-x64.exe** (x64, 64-bit). Tras una compilación correcta, el target **CopyToAmigaDebug** copia el ejecutable a `bin\win32` o `bin\win64` de la extensión amiga-debug.
+El script llama a `vcvarsall.bat` (x86 o x64) para configurar el entorno y luego MSBuild. Salida: **winuae-gdb.exe** (Win32, 32-bit) o **winuae-gdb-x64.exe** (x64, 64-bit). Tras una compilación correcta, el target **CopyToAmigaDebug** copia el ejecutable a `bin\win32` o `bin\win64` dentro de la extensión **BartmanAbyss.amiga-debug** bajo `%USERPROFILE%\.cursor\extensions` (y, si existen, la copia 1.7.9 en Cursor y la 1.8.2 en VS Code). El binario empaquetado por el marketplace queda sustituido; guarda una copia de seguridad del original como **`winuae-gdb-bartman-stock.exe`** junto a `winuae-gdb.exe` para poder restaurar el WinUAE de stock (copia ese archivo sobre `winuae-gdb.exe`). Puedes cambiar la carpeta destino con MSBuild: `/p:AmigaDebugExtensionRoot=ruta\a\bartmanabyss.amiga-debug-VERSION`.
 
 ---
 

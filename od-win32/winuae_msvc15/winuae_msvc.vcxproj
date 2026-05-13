@@ -1964,10 +1964,15 @@
   <PropertyGroup>
     <AmigaDebugBinFolder Condition="'$(Platform)'=='Win32'">win32</AmigaDebugBinFolder>
     <AmigaDebugBinFolder Condition="'$(Platform)'=='x64'">win64</AmigaDebugBinFolder>
+    <!-- Override with /p:AmigaDebugExtensionRoot=... to deploy to a single custom folder -->
+    <AmigaDebugExtensionRoot Condition="'$(AmigaDebugExtensionRoot)'==''">$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.8.2</AmigaDebugExtensionRoot>
   </PropertyGroup>
   <Target Name="CopyToAmigaDebug" AfterTargets="Build">
-    <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="C:\Users\dvdjg\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!=''" />
-    <Message Importance="high" Text="Copied $(TargetName)$(TargetExt) to amiga-debug extension bin\$(AmigaDebugBinFolder)" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!=''" />
+    <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="$(AmigaDebugExtensionRoot)\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!='' and Exists('$(AmigaDebugExtensionRoot)\bin\$(AmigaDebugBinFolder)')" />
+    <Message Importance="high" Text="Copied $(TargetName)$(TargetExt) to $(AmigaDebugExtensionRoot)\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!='' and Exists('$(AmigaDebugExtensionRoot)\bin\$(AmigaDebugBinFolder)')" />
+    <!-- Optional: other common installs (skipped if folder missing). Restore stock with winuae-gdb-bartman-stock.exe → winuae-gdb.exe -->
+    <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!='' and Exists('$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)') and '$(AmigaDebugExtensionRoot)'!='$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9'" />
+    <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="$(UserProfile)\.vscode\extensions\bartmanabyss.amiga-debug-1.8.2\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!='' and Exists('$(UserProfile)\.vscode\extensions\bartmanabyss.amiga-debug-1.8.2\bin\$(AmigaDebugBinFolder)')" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
