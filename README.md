@@ -2,7 +2,7 @@
 
 Fork de WinUAE con servidor GDB y comandos monitor extendidos para depuración remota de programas Amiga. Compatible con [mcp-winuae-emu](https://github.com/axewater/mcp-winuae-emu) (MCP server para Cursor/Claude).
 
-**Documentación del proyecto:** índice en **[doc/README.md](doc/README.md)**. Historial del fork: **[doc/HISTORIAL-CAMBIOS.md](doc/HISTORIAL-CAMBIOS.md)**. Visión Bartman / vscode-amiga-debug / MCP e IA y **atribución Bartman vs cambios locales**: **[doc/BARTMAN-VSCODE-Y-EVOLUCION.md](doc/BARTMAN-VSCODE-Y-EVOLUCION.md#atribucion-bartman-vs-fork)**.
+**Documentación del proyecto:** índice en **[doc/README.md](doc/README.md)**. Historial del fork: **[doc/HISTORIAL-CAMBIOS.md](doc/HISTORIAL-CAMBIOS.md)**. **Quién hizo qué (Bartman / axewater / David)** y **compatibilidad GDB**: **[doc/BARTMAN-VSCODE-Y-EVOLUCION.md](doc/BARTMAN-VSCODE-Y-EVOLUCION.md#atribucion-bartman-vs-fork)**.
 
 ## Requisitos del sistema
 

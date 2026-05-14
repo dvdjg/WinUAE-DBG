@@ -2,7 +2,7 @@
 
 Este documento registra los cambios en el sistema de depuración Amiga **desde la línea BartmanAbyss** (servidor GDB en WinUAE + extensión **vscode-amiga-debug** + GDB m68k fork) y, en concreto, las **capas añadidas en este fork (WinUAE-DBG)**.
 
-**Atribución resumida:** la integración GDB↔WinUAE («**Barto**», `barto_gdbserver.cpp`) es de **BartmanAbyss** y colaboradores en ese fork (p. ej. aparición frecuente de **Bernhard Wodok** / **bwodok** en `git log` del archivo). Las correcciones de **relocalización**, gran parte de los **comandos monitor** recientes, **MCP**, **screenshots** en el stub y el trabajo en **ratón absoluto** / build están en commits de **david.jurado**. No hay autor «Alex» en ese historial; si se confunde con **axewater**, es el upstream del fork en GitHub, no una segunda implementación del servidor. Detalle narrativo: [BARTMAN-VSCODE-Y-EVOLUCION.md](BARTMAN-VSCODE-Y-EVOLUCION.md#atribucion-bartman-vs-fork).
+**Atribución en tres capas** (Bartman / axewater / David) y **reglas para no romper GDB/RSP**: [BARTMAN-VSCODE-Y-EVOLUCION.md](BARTMAN-VSCODE-Y-EVOLUCION.md#atribucion-bartman-vs-fork). Resumen: **Bartman** = base RSP + extensión + GDB fork; **axewater** = fork GitHub + commit **`fa28ff85`** (*monitor screenshot* / *monitor disasm*, autor git **acehighness**); **David** = **david.jurado** (relocalización, monitor posterior, MCP, ratón, build, log *axewater fork* en **`85a37798`**).
 
 ---
 
