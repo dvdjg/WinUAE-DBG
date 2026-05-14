@@ -1,6 +1,8 @@
 # Historial de Cambios en el Sistema de Depuración
 
-Este documento registra todos los cambios realizados a los componentes del sistema de depuración Amiga desde el estado original de Bartman.
+Este documento registra los cambios en el sistema de depuración Amiga **desde la línea BartmanAbyss** (servidor GDB en WinUAE + extensión **vscode-amiga-debug** + GDB m68k fork) y, en concreto, las **capas añadidas en este fork (WinUAE-DBG)**.
+
+**Atribución resumida:** la integración GDB↔WinUAE («**Barto**», `barto_gdbserver.cpp`) es de **BartmanAbyss** y colaboradores en ese fork (p. ej. aparición frecuente de **Bernhard Wodok** / **bwodok** en `git log` del archivo). Las correcciones de **relocalización**, gran parte de los **comandos monitor** recientes, **MCP**, **screenshots** en el stub y el trabajo en **ratón absoluto** / build están en commits de **david.jurado**. No hay autor «Alex» en ese historial; si se confunde con **axewater**, es el upstream del fork en GitHub, no una segunda implementación del servidor. Detalle narrativo: [BARTMAN-VSCODE-Y-EVOLUCION.md](BARTMAN-VSCODE-Y-EVOLUCION.md#atribucion-bartman-vs-fork).
 
 ---
 
@@ -311,4 +313,4 @@ this.miDebugger.once('sections-loaded', (sections: Section[], loadOffset?: numbe
 
 ---
 
-*Actualizado: 2026-02-22*
+*Actualizado: 2026-02-22; atribución Bartman vs fork local: 2026-05-14*

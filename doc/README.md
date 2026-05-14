@@ -6,7 +6,7 @@ Toda la documentación técnica del fork vive en esta carpeta **`doc/`** (incluy
 
 | Documento | Descripción |
 |-----------|-------------|
-| [BARTMAN-VSCODE-Y-EVOLUCION.md](BARTMAN-VSCODE-Y-EVOLUCION.md) | Aportes de BartmanAbyss (vscode-amiga-debug + GDB en WinUAE), evolución del fork, ratón, MCP e IA |
+| [BARTMAN-VSCODE-Y-EVOLUCION.md](BARTMAN-VSCODE-Y-EVOLUCION.md) | BartmanAbyss («Barto»): GDB en WinUAE + extensión; **atribución** vs fork local (david.jurado); ratón, MCP e IA |
 | [DEBUGGING-ARCHITECTURE.md](DEBUGGING-ARCHITECTURE.md) | Arquitectura: componentes, DAP / MI / RSP, flujos |
 | [DEBUGGING-STRATEGY.md](DEBUGGING-STRATEGY.md) | Estrategia de depuración (ratón, flags, checklist, `setmousestate`) |
 | [HISTORIAL-CAMBIOS.md](HISTORIAL-CAMBIOS.md) | Cambios desde el código original de Bartman (relocalización, extensión) |

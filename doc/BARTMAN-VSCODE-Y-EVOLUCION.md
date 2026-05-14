@@ -6,6 +6,39 @@ Para detalle técnico de relocalización y cambios en la extensión, ver tambié
 
 ---
 
+## Atribución: Bartman («Barto»), upstream y extensiones encima {#atribucion-bartman-vs-fork}
+
+Esta sección fija **quién implementó qué** respecto al depurador remoto (GDB RSP dentro de WinUAE) y evita confusiones con nombres parecidos.
+
+### Nombres y repositorios
+
+| Nombre / alias | Rol en este contexto |
+|----------------|----------------------|
+| **BartmanAbyss** | Autor público del ecosistema **vscode-amiga-debug** + fork **WinUAE** con servidor GDB + fork **binutils-gdb** para Amiga; en el código WinUAE aparece como **«Barto»** (`barto_gdbserver.cpp`, `WINUAEEXTRA` «Barto's GDBServer Edition» en `win32.h`). |
+| **Bernhard Wodok** / **bwodok** | Commits frecuentes en el mismo árbol de depuración (historial compartido con el fork de Bartman sobre WinUAE). |
+| **david.jurado** | Commits de este fork **WinUAE-DBG** encima de Bartman: relocalización diferida, monitor, MCP, ratón, build, etc. (ver [HISTORIAL-CAMBIOS.md](HISTORIAL-CAMBIOS.md) y tabla siguiente). |
+| **«Alex»** | **No** figura como autor en `git log` sobre `od-win32/barto_gdbserver.cpp`. Si se refiere al usuario GitHub **axewater** (línea del fork **WinUAE-DBG** en GitHub), es la **organización / upstream del fork** del documento, no una segunda implementación del servidor GDB distinta de Bartman. |
+
+Los comentarios de ejemplo al inicio de `barto_gdbserver.cpp` (rutas con usuario **`Chuck`**, plantillas `amiga-debug`) son **notas de depuración local** del proyecto original de la extensión; no definen la autoría del protocolo.
+
+### Qué añadió Bartman al WinUAE para conectar con GDB (idea general)
+
+Sin pretender listar cada paquete RSP: la **extensión** respecto a un WinUAE stock es que el emulador actúa como **target remoto GDB** (socket TCP, RSP, `qOffsets`, memoria, breakpoints, paso, integración con el bucle de emulación) y expone **comandos monitor** vía `qRcmd` (perfilado, savestates, recursos, logs, etc.). Eso es lo que permite a **vscode-amiga-debug** (y a cualquier cliente RSP, p. ej. MCP) depurar código Amiga.
+
+### Qué extensiones lleva **este** repositorio encima (fork local)
+
+Además de merges de WinUAE upstream y de la línea Bartman, el historial de git bajo `barto_gdbserver.cpp` atribuye a **david.jurado** trabajo como:
+
+- **Relocalización y GDB**: breakpoints diferidos / `relocate_breakpoints`, mejoras en manejo de `qOffsets` y paquetes relacionados (véase [HISTORIAL-CAMBIOS.md](HISTORIAL-CAMBIOS.md), [RELOCATION-FIX.md](RELOCATION-FIX.md)).
+- **Monitor**: p. ej. **`memcfg`**, utilidades **findproc / findcli**, logging **`barto_log`**, comandos de audio/gráficos/disks/disasm (según commits listados en el log).
+- **MCP**: corrección cuando el depurador queda activo de forma que bloquea la emulación; extensiones orientadas a **registros** y **warp**.
+- **Capturas**: mejoras en el flujo de **screenshots** desde el stub.
+- **Ratón en host** (parte WinUAE, no solo stub): modo absoluto, `setmousestate`, etc. ([DEBUGGING-STRATEGY.md](DEBUGGING-STRATEGY.md)).
+
+Para una lista commit-a-commit del lado **vscode-amiga-debug** (TypeScript: `mi2.ts`, `symbols.ts`, …), usar el mismo rango de fechas en el clon de la extensión; aquí el foco es el **binario WinUAE** (`winuae-gdb.exe`) y `barto_gdbserver.cpp`.
+
+---
+
 ## 1. Qué aportó BartmanAbyss al ecosistema
 
 ### 1.1 Extensión Visual Studio Code
