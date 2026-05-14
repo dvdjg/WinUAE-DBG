@@ -697,6 +697,8 @@ static void setmaintitle(int monid)
 		_tcscat (txt, _T(" - "));
 		_tcscat (txt, txt2);
 	}
+	if (_tcslen (txt) + _tcslen (WINUAE_DBG_TITLE_TAG) < sizeof (txt) / sizeof (TCHAR))
+		_tcscat (txt, WINUAE_DBG_TITLE_TAG);
 	SetWindowText (hwnd, txt);
 }
 
@@ -2611,36 +2613,25 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 			if (rp_mouseevent(mx, my, -1, -1))
 				return 0;
 
-			/* win32_absolute_mouse: map Windows cursor to Amiga screen coords, no relative deltas, no warping */
+			/* win32_absolute_mouse: same mapping as mousehack (getgfxoffset / P96 offsets), not raw window rect scale */
 			if (currprefs.win32_absolute_mouse) {
-				POINT pt = { mx, my };
-				ClientToScreen(hWnd, &pt);
-				RECT *clip = &mon->amigawinclip_rect;
-				int cw = clip->right - clip->left;
-				int ch = clip->bottom - clip->top;
-				if (cw > 0 && ch > 0) {
-					int sx = pt.x, sy = pt.y;
-					/* Clamp to Amiga display area - nearest edge pixel if outside */
-					if (sx < clip->left) sx = clip->left;
-					else if (sx >= clip->right) sx = clip->right - 1;
-					if (sy < clip->top) sy = clip->top;
-					else if (sy >= clip->bottom) sy = clip->bottom - 1;
-					int ax = sx - clip->left;
-					int ay = sy - clip->top;
-					/* Scale to Amiga native resolution for 1:1 cursor matching */
-					struct vidbuf_description *vidinfo = &adisplays[mon->monitor_id].gfxvidinfo;
-					if (vidinfo->outbuffer && vidinfo->outbuffer->outwidth > 0 && vidinfo->outbuffer->outheight > 0) {
-						int aw = vidinfo->outbuffer->outwidth;
-						int ah = vidinfo->outbuffer->outheight;
-						ax = (int)((double)ax * aw / cw);
-						ay = (int)((double)ay * ah / ch);
-						if (ax >= aw) ax = aw - 1;
-						if (ay >= ah) ay = ah - 1;
-					}
-					setmousestate(dinput_winmouse() >= 0 ? dinput_winmouse() : 0, 0, ax, 1);
-					setmousestate(dinput_winmouse() >= 0 ? dinput_winmouse() : 0, 1, ay, 1);
+				int ax, ay;
+				POINT pt = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+				if (hWnd != mon->hAmigaWnd)
+					MapWindowPoints(hWnd, mon->hAmigaWnd, &pt, 1);
+				inputdevice_translate_win32_guest_client(mon->monitor_id, pt.x, pt.y, &ax, &ay);
+				struct vidbuf_description *vidinfo = &adisplays[mon->monitor_id].gfxvidinfo;
+				if (vidinfo->outbuffer && vidinfo->outbuffer->outwidth > 0 && vidinfo->outbuffer->outheight > 0) {
+					int aw = vidinfo->outbuffer->outwidth;
+					int ah = vidinfo->outbuffer->outheight;
+					if (ax < 0) ax = 0;
+					else if (ax >= aw) ax = aw - 1;
+					if (ay < 0) ay = 0;
+					else if (ay >= ah) ay = ah - 1;
 				}
-				/* No setcursor() - no warping. No default SetCapture (see WM_*BUTTON*). */
+				int mdev = dinput_winmouse() >= 0 ? dinput_winmouse() : 0;
+				setmousestate(mdev, 0, ax, 1);
+				setmousestate(mdev, 1, ay, 1);
 				return 0;
 			}
 

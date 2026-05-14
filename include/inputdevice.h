@@ -389,6 +389,9 @@ bool osk_status(void);
 
 void inputdevice_draco_key(int kc);
 
+/* Win32: map hAmigaWnd client pixels to Amiga display buffer coords (uses getgfxoffset / P96 offsets). */
+extern bool inputdevice_translate_win32_guest_client(int monid, int cx, int cy, int *ax, int *ay);
+
 extern int key_swap_hack, key_swap_hack2;
 
 #endif /* UAE_INPUTDEVICE_H */

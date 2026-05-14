@@ -31,6 +31,11 @@
 //#define WINUAEEXTRA _T("AmiKit Preview")
 //#define WINUAEEXTRA _T("Amiga Forever Edition")
 
+/* Sufijo en la barra de título de la ventana de emulación (setmaintitle, win32.cpp). */
+#ifndef WINUAE_DBG_TITLE_TAG
+#define WINUAE_DBG_TITLE_TAG _T(" [WinUAE-DBG]")
+#endif
+
 #ifndef WINUAEEXTRA
 #define WINUAEEXTRA _T("")
 #endif

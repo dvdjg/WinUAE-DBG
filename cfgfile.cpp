@@ -7710,6 +7710,9 @@ int parse_cmdline_option (struct uae_prefs *p, TCHAR c, const TCHAR *arg)
 #endif
 
 	case 'n':
+		/* "-norawinput_*" becomes arg "orawinput_*" (see main.cpp parse_cmdline); do not treat as legacy -n<i>mmediate. */
+		if (arg && _tcsncmp(arg, _T("orawinput"), 8) == 0)
+			break;
 		if (_tcschr (arg, 'i') != 0)
 			p->immediate_blits = 1;
 		break;

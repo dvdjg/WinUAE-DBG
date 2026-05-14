@@ -2641,9 +2641,8 @@ void input_mousehack_mouseoffset(uaecptr pointerprefs)
 	mouseoffset_y = (uae_s16)get_word (pointerprefs + 30);
 }
 
-static bool get_mouse_position(int *xp, int *yp, int inx, int iny)
+static bool get_mouse_position(int monid, int *xp, int *yp, int inx, int iny)
 {
-	int monid = 0;
 	struct vidbuf_description *vidinfo = &adisplays[monid].gfxvidinfo;
 	struct amigadisplay *ad = &adisplays[monid];
 	struct picasso96_state_struct *state = &picasso96_state[monid];
@@ -2689,6 +2688,11 @@ static bool get_mouse_position(int *xp, int *yp, int inx, int iny)
 	*xp = x;
 	*yp = y;
 	return ob == false;
+}
+
+bool inputdevice_translate_win32_guest_client(int monid, int cx, int cy, int *ax, int *ay)
+{
+	return get_mouse_position(monid, ax, ay, cx, cy);
 }
 
 void mousehack_wakeup(void)
@@ -3256,7 +3260,7 @@ static void mousehack_helper (uae_u32 buttonmask)
 		return;
 	}
 
-	get_mouse_position(&x, &y, lastmx, lastmy);
+	get_mouse_position(0, &x, &y, lastmx, lastmy);
 	inputdevice_mh_abs(x, y, buttonmask);
 }
 
