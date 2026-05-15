@@ -64,6 +64,7 @@ extern uae_u64 debug_illegal_mask;
 extern int debugger_used;
 
 extern void debug (void);
+extern void debug_gdb_reset_process_entry_flag (void);
 extern void debugger_change (int mode);
 extern void activate_debugger(void);
 extern void activate_debugger_new(void);

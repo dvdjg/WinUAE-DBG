@@ -42,6 +42,7 @@ extern void initialize_memwatch(int mode);
 extern void memwatch_setup();
 /*static*/ extern int trace_mode;
 /*static*/ extern uae_u32 trace_param[3];
+extern bool gdb_notify_process_entry;
 /*static*/ extern uaecptr processptr;
 /*static*/ extern uae_char *processname;
 /*static*/ extern int memwatch_triggered;
@@ -53,6 +54,7 @@ extern uae_u64 debug_illegal_mask;
 extern int consoleopen;
 
 #include "barto_gdbserver.h"
+#include "debug.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -378,15 +380,19 @@ namespace barto_gdbserver {
 		int relocated = 0;
 		for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
 			uaecptr elfAddr = breakpoint_elf_addresses[i];
-			if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000) {
-				uaecptr relocatedAddr = elfAddr + loadOffset;
-				for(auto& bpn : bpnodes) {
-					if(bpn.enabled && bpn.value1 == elfAddr) {
-						barto_log("RELOC: BP[%d] 0x%x -> 0x%x\n", (int)i, elfAddr, relocatedAddr);
-						bpn.value1 = relocatedAddr;
-						relocated++;
-						break;
-					}
+			uaecptr relocatedAddr = 0;
+			if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000)
+				relocatedAddr = elfAddr + loadOffset;
+			else if(elfAddr < ELF_TEXT_BASE)
+				relocatedAddr = elfAddr + baseText; // -Ttext=0
+			else
+				continue;
+			for(auto& bpn : bpnodes) {
+				if(bpn.enabled && (bpn.value1 == elfAddr || bpn.value1 == relocatedAddr)) {
+					barto_log("RELOC: BP[%d] 0x%x -> 0x%x\n", (int)i, elfAddr, relocatedAddr);
+					bpn.value1 = relocatedAddr;
+					relocated++;
+					break;
 				}
 			}
 		}
@@ -595,6 +601,71 @@ namespace barto_gdbserver {
 		return 0;
 	}
 
+	static bool offsets_look_stale()
+	{
+		// CON/Kickstart fallback from early qOffsets (e.g. baseText=0xff9c20, size 0x81)
+		if(baseText >= 0xf00000)
+			return true;
+		if(sizeText > 0 && sizeText < 0x200)
+			return true;
+		return false;
+	}
+
+	// Resolve :a.exe (or other trigger) segList and update baseText/sizeText/sections.
+	static bool refresh_process_offsets(const char* search_name, std::string* qoffsets_response)
+	{
+		if(!search_name || !search_name[0])
+			return false;
+
+		auto BADDR = [](uaecptr bptr) -> uaecptr { return bptr << 2; };
+		uaecptr proc = find_process_by_name(search_name);
+		uaecptr segList = 0;
+
+		if(proc) {
+			auto pr_SegList = BADDR(get_long_debug(proc + 0x80));
+			auto pr_CLI = get_long_debug(proc + 0xAC);
+			if(pr_CLI) {
+				auto cli = BADDR(pr_CLI);
+				auto cli_Module = get_long_debug(cli + 0x3C);
+				if(cli_Module)
+					segList = BADDR(cli_Module);
+			}
+			if(!segList && pr_SegList)
+				segList = pr_SegList;
+		} else {
+			proc = find_cli_with_module(search_name, &segList);
+		}
+
+		if(!proc || !segList)
+			return false;
+
+		sections.clear();
+		baseText = 0;
+		sizeText = 0;
+		for(int i = 0; segList; i++) {
+			auto size = get_long_debug(segList - 4) - 4;
+			auto base = segList + 4;
+			if(i == 0) {
+				baseText = base;
+				sizeText = size;
+			}
+			sections.push_back(base);
+			if(qoffsets_response) {
+				if(i == 0)
+					*qoffsets_response = "$";
+				else
+					*qoffsets_response += ";";
+				*qoffsets_response += hex32(base);
+			}
+			segList = BADDR(get_long_debug(segList));
+		}
+
+		barto_log("REFRESH_OFFSETS: '%s' -> baseText=0x%x sizeText=0x%x (%d sections)\n",
+			search_name, baseText, sizeText, (int)sections.size());
+		relocate_breakpoints();
+		return baseText > 0 && sizeText >= 0x200;
+	}
+
 	// Helper: call deactivate_debugger() but preserve processname for GDB server
 	void deactivate_debugger_preserve_processname() {
 		// Save processname before deactivate clears it
@@ -761,6 +832,7 @@ namespace barto_gdbserver {
 				processname = nullptr;
 				processname = ua(currprefs.debugging_trigger);
 				trace_mode = TRACE_CHECKONLY;
+				debug_gdb_reset_process_entry_flag();
 				barto_log("GDBSERVER: DEBUG state::inited - debugging_trigger='%s', processname set to '%s'\n", 
 					currprefs.debugging_trigger, processname ? processname : "(null)");
 			} else {
@@ -941,7 +1013,10 @@ namespace barto_gdbserver {
 					}
 				}
 				if(!request.empty() && request[0] == 0x03) {
-					// Ctrl+C
+					// Ctrl+C — clear pending step/trace so pause lands on current PC
+					trace_mode = 0;
+					trace_param[0] = trace_param[1] = trace_param[2] = 0;
+					exception_debugging = 0;
 					ack = "+";
 					response = "$";
 					response += "S05"; // SIGTRAP
@@ -1021,10 +1096,15 @@ namespace barto_gdbserver {
 										}
 									}
 									
-									// Fallback to ThisTask if process not found by name
+									// Do not use ThisTask when waiting for :a.exe — CON/Workbench breaks relocation
 									if(!TargetProcess) {
-										TargetProcess = get_long_debug(execbase + 276);
-										barto_log("GDBSERVER: qOffsets - using ThisTask fallback: 0x%x\n", TargetProcess);
+										if(search_name && search_name[0]) {
+											barto_log("GDBSERVER: qOffsets - '%s' not loaded yet (no ThisTask fallback)\n",
+												search_name);
+										} else {
+											TargetProcess = get_long_debug(execbase + 276);
+											barto_log("GDBSERVER: qOffsets - using ThisTask fallback: 0x%x\n", TargetProcess);
+										}
 									}
 									
 									response += "E01";
@@ -1770,48 +1850,42 @@ namespace barto_gdbserver {
 										// hmm.. what to do with multiple actions?!
 
 										if(action == "s") { // single-step
-											// step over - GDB does this in a different way
-											//auto pc = M68K_GETPC;
-											//decltype(pc) nextpc;
-											//m68k_disasm(pc, &nextpc, pc, 1);
-											//trace_mode = TRACE_MATCH_PC;
-											//trace_param1 = nextpc;
-
-											// step in
+											// step in (one instruction)
 											trace_param[0] = 1;
 											trace_mode = TRACE_SKIP_INS;
 
 											exception_debugging = 1;
 											debugger_state = state::connected;
-											
-											// MCP-WINUAE-EMU FIX: Must deactivate debugger to let emulation continue
-											// but preserve exception_debugging for trace to work
+
 											deactivate_debugger_preserve_processname();
+											// deactivate_debugger() clears debugging; CPU only calls
+											// debug() when debugging!=0 (see newcpu.cpp check_debugger).
+											debugging = -1;
+											set_special(SPCFLAG_BRK);
 											exception_debugging = 1;
-											
+											barto_log("GDBSERVER: vCont;s - TRACE_SKIP_INS, debugging=%d\n", debugging);
+
 											send_ack(ack);
 											return;
 										} else if(action == "c") { // continue
 											debugger_state = state::connected;
-											
-											// Enable breakpoint checking if there are active breakpoints
+
 											int bp_count = 0;
 											for(const auto& bpn : bpnodes) {
-												if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC) {
+												if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC)
 													bp_count++;
-												}
 											}
-											
+
 											deactivate_debugger_preserve_processname();
-											
-											if(bp_count > 0) {
-												// Re-enable trace mode and debugging after deactivate cleared them
+
+											// CPU only runs debug()/breakpoints when debugging!=0
+											debugging = -1;
+											set_special(SPCFLAG_BRK);
+											if(bp_count > 0)
 												trace_mode = TRACE_CHECKONLY;
-												debugging = -1;
-												set_special(SPCFLAG_BRK);
-												barto_log("GDBSERVER: vCont;c - enabling TRACE_CHECKONLY for %d breakpoints, debugging=%d\n", bp_count, debugging);
-											}
-											
+											barto_log("GDBSERVER: vCont;c - debugging=%d trace_mode=%d bps=%d\n",
+												debugging, trace_mode, bp_count);
+
 											send_ack(ack);
 											return;
 										} else if(action[0] == 'r') { // keep stepping in range
@@ -1826,8 +1900,11 @@ namespace barto_gdbserver {
 												
 												// MCP-WINUAE-EMU FIX: Must deactivate debugger to let emulation continue
 												deactivate_debugger_preserve_processname();
+												debugging = -1;
+												set_special(SPCFLAG_BRK);
 												exception_debugging = 1;
-												
+												barto_log("GDBSERVER: vCont;r - TRACE_NRANGE_PC, debugging=%d\n", debugging);
+
 												send_ack(ack);
 												return;
 											}
@@ -1871,7 +1948,8 @@ namespace barto_gdbserver {
 										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
 										uaecptr relocatedAdr = adr;
 										
-										bool isInLoadedRange = (baseText > 0 && sizeText > 0 && 
+										// baseText must come from qOffsets (real segList), not MCP placeholder 0..7fffffff
+										bool isInLoadedRange = (baseText > 0 && sizeText > 0 && sizeText < 0x01000000 &&
 											adr >= baseText && adr < baseText + sizeText);
 										bool isInElfRange = (adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000);
 										
@@ -1884,6 +1962,10 @@ namespace barto_gdbserver {
 											// ELF address - relocate
 											relocatedAdr = adr + loadOffset;
 											barto_log("Z0: RELOCATED 0x%x -> 0x%x (loadOffset=0x%x)\n", adr, relocatedAdr, loadOffset);
+										} else if(baseText > 0 && adr < ELF_TEXT_BASE) {
+											// -Ttext=0 ELF: code below 0x400 maps at baseText
+											relocatedAdr = adr + baseText;
+											barto_log("Z0: RELOCATED low ELF 0x%x -> 0x%x (baseText=0x%x)\n", adr, relocatedAdr, baseText);
 										} else {
 											// Raw address or unknown - use as-is
 											barto_log("Z0: Using address 0x%x directly (loadOffset=0x%x)\n", adr, loadOffset);
@@ -1912,7 +1994,8 @@ namespace barto_gdbserver {
 											response += "OK";
 											break;
 											}
-											// TODO: error when too many breakpoints!
+											barto_log("Z0: ERROR no free breakpoint slot for 0x%x\n", relocatedAdr);
+											response += "E27";
 										}
 									} else
 										response += "E01";
@@ -1924,7 +2007,7 @@ namespace barto_gdbserver {
 										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
 										uaecptr relocatedAdr = adr;
 										
-										bool isInLoadedRange = (baseText > 0 && sizeText > 0 && 
+										bool isInLoadedRange = (baseText > 0 && sizeText > 0 && sizeText < 0x01000000 &&
 											adr >= baseText && adr < baseText + sizeText);
 										bool isInElfRange = (adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000);
 										
@@ -1932,6 +2015,10 @@ namespace barto_gdbserver {
 											relocatedAdr = adr;
 										} else if(loadOffset > 0 && isInElfRange) {
 											relocatedAdr = adr + loadOffset;
+										} else if(baseText > 0 && adr < ELF_TEXT_BASE) {
+											// -Ttext=0 ELF: code below 0x400 maps at baseText
+											relocatedAdr = adr + baseText;
+											barto_log("Z0: RELOCATED low ELF 0x%x -> 0x%x (baseText=0x%x)\n", adr, relocatedAdr, baseText);
 										}
 										if(adr == 0xffffffff) {
 											response += "OK";
@@ -2125,16 +2212,22 @@ namespace barto_gdbserver {
 			return;
 
 		// MCP-WINUAE-EMU EXTENSION: Auto-activate debugger when GDB client connects
-		// This allows games loaded from ADF to be debugged without a debugging_trigger
+		// This allows games loaded from ADF to be debugged without a debugging_trigger.
+		// When debugging_trigger is set (:a.exe), stay in state::inited so debug()'s
+		// first-call setup still runs, but service GDB packets during the boot wait.
 		if(debugger_state == state::inited && is_connected()) {
-			barto_log("GDBSERVER: Client connected, activating debugger for MCP mode\n");
 			useAck = true;
-			debugger_state = state::debugging;
-			debugmem_trace = true;
-			// Set up for generic debugging (no specific process)
-			baseText = 0;
-			sizeText = 0x7fff'ffff;
-			activate_debugger();
+			if(currprefs.debugging_trigger[0]) {
+				if(data_available())
+					handle_packet();
+			} else {
+				barto_log("GDBSERVER: Client connected, activating debugger for MCP mode\n");
+				debugger_state = state::debugging;
+				debugmem_trace = true;
+				// Leave baseText/sizeText at 0 until qOffsets reports real segList (avoids
+				// treating every GDB address as "already loaded" and skipping relocation).
+				activate_debugger();
+			}
 		}
 
 		static uae_u32 profile_start_cycles{};
@@ -2447,53 +2540,26 @@ start_profile:
 				//KPutCharX
 				auto execbase = get_long_debug(4);
 				KPutCharX = execbase - 0x204;
-				for(auto& bpn : bpnodes) {
-					if(bpn.enabled)
-						continue;
-					bpn.value1 = KPutCharX;
+				// Reserve bpnodes[0..15] for GDB Z0; system traps use high slots
+				const int sys_bp_base = 16;
+				auto install_sys_bp = [&](int slot, uaecptr addr, const char* label) {
+					if(slot < 0 || slot >= BREAKPOINT_TOTAL)
+						return;
+					auto& bpn = bpnodes[slot];
+					bpn.value1 = addr;
 					bpn.type = BREAKPOINT_REG_PC;
 					bpn.oper = BREAKPOINT_CMP_EQUAL;
 					bpn.enabled = 1;
-					barto_log("GDBSERVER: Breakpoint for KPutCharX at 0x%x installed\n", bpn.value1);
-					break;
-				}
+					barto_log("GDBSERVER: Breakpoint for %s at 0x%x (slot %d)\n", label, addr, slot);
+				};
 
-				// TRAP#7 breakpoint (GCC generates this opcode when it encounters undefined behavior)
+				install_sys_bp(sys_bp_base + 0, KPutCharX, "KPutCharX");
 				Trap7 = get_long_debug(regs.vbr + 0x9c);
-				for(auto& bpn : bpnodes) {
-					if(bpn.enabled)
-						continue;
-					bpn.value1 = Trap7;
-					bpn.type = BREAKPOINT_REG_PC;
-					bpn.oper = BREAKPOINT_CMP_EQUAL;
-					bpn.enabled = 1;
-					barto_log("GDBSERVER: Breakpoint for TRAP#7 at 0x%x installed\n", bpn.value1);
-					break;
-				}
-
+				install_sys_bp(sys_bp_base + 1, Trap7, "TRAP#7");
 				AddressError = get_long_debug(regs.vbr + 3 * 4);
-				for(auto& bpn : bpnodes) {
-					if(bpn.enabled)
-						continue;
-					bpn.value1 = AddressError;
-					bpn.type = BREAKPOINT_REG_PC;
-					bpn.oper = BREAKPOINT_CMP_EQUAL;
-					bpn.enabled = 1;
-					barto_log("GDBSERVER: Breakpoint for AddressError at 0x%x installed\n", bpn.value1);
-					break;
-				}
-
+				install_sys_bp(sys_bp_base + 2, AddressError, "AddressError");
 				IllegalError = get_long_debug(regs.vbr + 4 * 4);
-				for(auto& bpn : bpnodes) {
-					if(bpn.enabled)
-						continue;
-					bpn.value1 = IllegalError;
-					bpn.type = BREAKPOINT_REG_PC;
-					bpn.oper = BREAKPOINT_CMP_EQUAL;
-					bpn.enabled = 1;
-					barto_log("GDBSERVER: Breakpoint for IllegalError at 0x%x installed\n", bpn.value1);
-					break;
-				}
+				install_sys_bp(sys_bp_base + 3, IllegalError, "IllegalError");
 
 				// watchpoint for NULL (GCC sees this as undefined behavior)
 				// disabled for now, always triggered in OpenScreen()
@@ -2547,10 +2613,26 @@ start_profile:
 			debugmem_trace = true;
 		}
 
+		if(gdb_notify_process_entry && debugger_state == state::debugging) {
+			gdb_notify_process_entry = false;
+			debugger_state = state::connected;
+			const char* search_name = processname ? processname :
+				(saved_processname.empty() ? nullptr : saved_processname.c_str());
+			if(search_name && refresh_process_offsets(search_name, nullptr))
+				barto_log("GDBSERVER: offsets refreshed for '%s' at process entry\n", search_name);
+			barto_log("GDBSERVER: first stop in debugged process, notifying GDB\n");
+		}
+
 		// something stopped execution and entered debugger
 		if(debugger_state == state::connected) {
 //while(!IsDebuggerPresent()) Sleep(100); __debugbreak();
 			auto pc = munge24(m68k_getpc());
+			if(offsets_look_stale()) {
+				const char* search_name = processname ? processname :
+					(saved_processname.empty() ? nullptr : saved_processname.c_str());
+				if(search_name)
+					refresh_process_offsets(search_name, nullptr);
+			}
 			barto_log("GDBSERVER: state::connected PC=0x%x baseText=0x%x\n", pc, baseText);
 			if (pc == KPutCharX) {
 				// if this is too slow, hook uaelib trap#86
@@ -2598,7 +2680,8 @@ start_profile:
 			}
 			// AUTO-DETECTION: If PC is in user range and we have unrelocated ELF breakpoints,
 			// try to detect baseText automatically by checking if PC matches any ELF BP + offset
-			if(baseText < ELF_TEXT_BASE && breakpoint_elf_addresses.size() > 0 && pc >= 0x1000 && pc < 0x1000000) {
+			if((offsets_look_stale() || baseText < ELF_TEXT_BASE) && breakpoint_elf_addresses.size() > 0 &&
+				pc >= 0x1000 && pc < 0x1000000) {
 				// PC is in potential user code range, check if it could be a relocated ELF address
 				for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
 					uaecptr elfAddr = breakpoint_elf_addresses[i];
@@ -2654,7 +2737,17 @@ start_profile:
 			}
 send_response:
 			send_response("$" + response);
-			trace_mode = 0;
+			// Do not clear TRACE_CHECKONLY here or GDB breakpoints stop working after the first hit
+			if(trace_mode == TRACE_SKIP_INS || trace_mode == TRACE_RANGE_PC || trace_mode == TRACE_NRANGE_PC)
+				trace_mode = 0;
+			else {
+				int bp_count = 0;
+				for(const auto& bpn : bpnodes) {
+					if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC)
+						bp_count++;
+				}
+				trace_mode = (bp_count > 0) ? TRACE_CHECKONLY : 0;
+			}
 			debugger_state = state::debugging;
 		}
 

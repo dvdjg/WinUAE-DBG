@@ -69,6 +69,8 @@
 
 // BARTO
 /*static*/ int trace_mode;
+static bool gdb_process_range_entered;
+bool gdb_notify_process_entry;
 /*static*/ uae_u32 trace_param[3];
 
 // BARTO
@@ -115,6 +117,12 @@ static void debug_cycles(int mode)
 	last_cycles2 = get_cycles();
 	last_vpos2 = vpos;
 	last_hpos2 = current_hpos();
+}
+
+void debug_gdb_reset_process_entry_flag (void)
+{
+	gdb_process_range_entered = false;
+	gdb_notify_process_entry = false;
 }
 
 void deactivate_debugger (void)
@@ -7896,40 +7904,7 @@ void debug (void)
 						}
 					}
 				}
-				if ((processptr || processname) && !isrom(m68k_getpc())) {
-					uaecptr execbase = get_long_debug (4);
-					uaecptr activetask = get_long_debug (execbase + 276);
-					if(activetask) { // BARTO
-						int process = get_byte_debug (activetask + 8) == 13 ? 1 : 0;
-						char *name = (char*)get_real_address_debug(get_long_debug (activetask + 10));
-						if (process) {
-							uaecptr cli = BPTR2APTR(get_long_debug (activetask + 172));
-							uaecptr seglist = 0;
-
-							uae_char *command = NULL;
-							if (cli) {
-								if (processname)
-									command = (char*)get_real_address_debug(BPTR2APTR(get_long_debug (cli + 16)));
-								seglist = BPTR2APTR(get_long_debug (cli + 60));
-							} else {
-								seglist = BPTR2APTR(get_long_debug (activetask + 128));
-								seglist = BPTR2APTR(get_long_debug (seglist + 12));
-							}
-							if (activetask == processptr || (processname && (!stricmp (name, processname) || (command && command[0] && !strnicmp (command + 1, processname, ((uae_u8*)command)[0]) && processname[command[0]] == 0)))) {
-								while (seglist) {
-									uae_u32 size = get_long_debug (seglist - 4) - 4;
-									if (pc >= (seglist + 4) && pc < (seglist + size)) {
-										// In process range: do not force stop; only stop on breakpoint (bpnum >= 0).
-										// bp = -1 made !bp false so we never continued (stopped every instruction).
-										bp = 0;
-										break;
-									}
-									seglist = BPTR2APTR(get_long_debug (seglist));
-								}
-							}
-						}
-					}
-				} else if (trace_mode == TRACE_MATCH_INS) {
+				if (trace_mode == TRACE_MATCH_INS) {
 					if (trace_param[0] == 0x10000) {
 						if (opcode == 0x4e75 || opcode == 0x4e73 || opcode == 0x4e77)
 							bp = -1;
@@ -7967,6 +7942,45 @@ void debug (void)
 						int line = debugmem_get_sourceline(pc, NULL, 0);
 						if (line > 0 && line != trace_param[1])
 							bp = -1;
+					}
+				} else if (trace_mode == TRACE_CHECKONLY && (processptr || processname) && !isrom(m68k_getpc())) {
+					uaecptr execbase = get_long_debug (4);
+					uaecptr activetask = get_long_debug (execbase + 276);
+					if(activetask) { // BARTO
+						int process = get_byte_debug (activetask + 8) == 13 ? 1 : 0;
+						char *name = (char*)get_real_address_debug(get_long_debug (activetask + 10));
+						if (process) {
+							uaecptr cli = BPTR2APTR(get_long_debug (activetask + 172));
+							uaecptr seglist = 0;
+
+							uae_char *command = NULL;
+							if (cli) {
+								if (processname)
+									command = (char*)get_real_address_debug(BPTR2APTR(get_long_debug (cli + 16)));
+								seglist = BPTR2APTR(get_long_debug (cli + 60));
+							} else {
+								seglist = BPTR2APTR(get_long_debug (activetask + 128));
+								seglist = BPTR2APTR(get_long_debug (seglist + 12));
+							}
+							if (activetask == processptr || (processname && (!stricmp (name, processname) || (command && command[0] && !strnicmp (command + 1, processname, ((uae_u8*)command)[0]) && processname[command[0]] == 0)))) {
+								while (seglist) {
+									uae_u32 size = get_long_debug (seglist - 4) - 4;
+									if (pc >= (seglist + 4) && pc < (seglist + size)) {
+										// First entry into debugged process: stop once (Bartman bp=-1).
+										// After that only stop on GDB breakpoints (bpnum >= 0), not every insn.
+										if (!gdb_process_range_entered) {
+											gdb_process_range_entered = true;
+											gdb_notify_process_entry = true;
+											bp = -1;
+										} else {
+											bp = 0;
+										}
+										break;
+									}
+									seglist = BPTR2APTR(get_long_debug (seglist));
+								}
+							}
+						}
 					}
 				}
 			}

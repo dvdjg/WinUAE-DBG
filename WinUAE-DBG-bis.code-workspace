@@ -8,6 +8,9 @@
 		},
 		{
 			"path": "../Amiga-C"
+		},
+		{
+			"path": "../vscode-amiga-debug"
 		}
 	],
 	"settings": {}
