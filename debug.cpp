@@ -1417,6 +1417,31 @@ struct dma_rec *last_dma_rec;
 // BARTO
 struct dma_rec* get_dma_records() { return dma_record_data; }
 
+void export_dma_records_profile(struct dma_rec *out, int out_w, int out_h)
+{
+	if (!out || out_w <= 0 || out_h <= 0 || !dma_record_data || !dma_record_lines)
+		return;
+
+	for (int y = 0; y < out_h; y++) {
+		struct dma_rec *dr = (y < NR_DMA_REC_LINES_MAX) ? dma_record_lines[y] : nullptr;
+		for (int x = 0; x < out_w; x++) {
+			struct dma_rec empty = {};
+			empty.reg = 0xffff;
+			empty.cf_reg = 0xffff;
+			struct dma_rec *src = &empty;
+			if (dr) {
+				src = dr;
+				dr++;
+				if (dr >= dma_record_data + NR_DMA_REC_MAX)
+					dr = dma_record_data;
+				if (dr->hpos == 0)
+					dr = nullptr;
+			}
+			out[y * out_w + x] = *src;
+		}
+	}
+}
+
 struct dma_rec *record_dma_next_cycle(int hpos, int vpos, int vvpos)
 {
 	if (!dma_record_data) {

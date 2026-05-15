@@ -166,15 +166,8 @@ struct vidbuffer;
 extern int screenshot_prepare(int);
 extern int screenshot_prepare(int, int);
 extern int screenshot_prepare(int monid, struct vidbuffer *vb);
-/* Profile .amigaprofile JPEG: always imagemode 0 / donormal — avoids C++ overload ambiguity with (monid, 0) vs (monid, vidbuffer*). */
-extern int screenshot_prepare_profile_embedded_jpeg(int monid);
 extern void screenshot_free(void);
 extern void screenshot_reset(void);
-/* Bytes per scanline of the last screenshot_get_bits() buffer (packed BI_RGB); 0 if none. */
-extern int screenshot_get_dib_row_pitch(void);
-/* When non-zero, donormal screenshot path logs PROFSHOT: lines (profiling thumbnail capture). */
-extern void screenshot_profile_thumb_trace(int on);
-extern int screenshot_profile_thumb_tracing(void);
 
 extern void rawinput_release(void);
 extern void rawinput_alloc(void);

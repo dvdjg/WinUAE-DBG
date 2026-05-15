@@ -367,6 +367,8 @@ extern void record_dma_ipl(void);
 extern void record_dma_ipl_sample(void);
 extern void debug_mark_refreshed(uaecptr);
 extern struct dma_rec* get_dma_records(); // BARTO
+/* Fill out[y*out_w+x] for Amiga Debug profile (227x313); uses dma_record_lines, not cyclic buffer. */
+extern void export_dma_records_profile(struct dma_rec *out, int out_w, int out_h);
 extern void debug_draw(uae_u8 *buf, uae_u8 *genlock, int line, int width, int height, uae_u32 *xredcolors, uae_u32 *xgreencolors, uae_u32 *xbluescolors);
 extern struct dma_rec *record_dma_next_cycle(int hpos, int vpos, int vvpos);
 

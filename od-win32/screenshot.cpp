@@ -87,19 +87,8 @@ static HDC surface_dc, offscreen_dc;
 static int surface_dc_monid;
 static BITMAPINFO *bi; // bitmap info
 static LPVOID lpvBits = NULL; // pointer to bitmap bits array
-/* Row stride of lpvBits for the last successful screenshot_prepare (authoritative for JPEG/PNG export). */
-static int screenshot_dib_row_pitch_bytes;
-static int screenshot_profile_thumb_trace_flag;
 BITMAPINFO* screenshot_get_bi() { return bi; } // BARTO
 void* screenshot_get_bits() { return lpvBits; } // BARTO
-int screenshot_get_dib_row_pitch(void) { return screenshot_dib_row_pitch_bytes; }
-void screenshot_profile_thumb_trace(int on) { screenshot_profile_thumb_trace_flag = on ? 1 : 0; }
-int screenshot_profile_thumb_tracing(void) { return screenshot_profile_thumb_trace_flag; }
-
-#define PROFSHOT_WLOG(...) do { \
-	if (screenshot_profile_thumb_trace_flag) \
-		write_log(__VA_ARGS__); \
-} while (0)
 
 static HBITMAP offscreen_bitmap;
 static int screenshot_prepared;
@@ -119,7 +108,6 @@ void screenshot_free(void)
 	if(lpvBits)
 		free(lpvBits);
 	lpvBits = NULL;
-	screenshot_dib_row_pitch_bytes = 0;
 	screenshot_prepared = FALSE;
 }
 
@@ -187,9 +175,6 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 	lockrtg();
 
 	screenshot_free ();
-
-	PROFSHOT_WLOG(_T("PROFSHOT: screenshot_prepare enter monid=%d imagemode=%d standard=%d usealpha=%d\n"),
-		monid, imagemode, standard ? 1 : 0, usealpha() ? 1 : 0);
 
 	if (!bi)
 		bi = xcalloc(BITMAPINFO, sizeof(BITMAPINFO) + 256 * sizeof(RGBQUAD));
@@ -486,8 +471,6 @@ static int screenshot_prepare(int monid, int imagemode, struct vidbuffer *vb, bo
 			else
 				freefilterbuffer(monid, mem, locked);
 		}
-		screenshot_dib_row_pitch_bytes = dpitch;
-
 	} else {
 donormal:
 		bool d3dcaptured = false;
@@ -498,47 +481,12 @@ donormal:
 			width = state->Width;
 			height = state->Height;
 		}
-		PROFSHOT_WLOG(_T("PROFSHOT: donormal monid=%d depth=%d renderTarget=%d WIN32/Picasso client=%dx%d d3d11=%d d3d9=%d\n"),
-			monid, depth, (int)renderTarget, width, height, D3D_isenabled(monid) == 2 ? 1 : 0, D3D_isenabled(monid) == 1 ? 1 : 0);
 		if (D3D_isenabled(monid) == 2) {
 			int w, h, bits, srcpitch;
 			void *data = nullptr;
 			bool got = false;
-			/* Unmap must use the same rendertarget flag as the successful Map (see D3D11_capture). */
 			bool d3d11_unmap_rt = renderTarget;
-			/* Profile JPEG uses imagemode==0 only (barto_gdbserver). Prefer native bitmap
-			 * (staging / m_bitmapWidth x m_bitmapHeight) over full-window RT — avoids letterboxing,
-			 * uninitialized border, and RT/layout quirks. Do not gate on IsPicassoScreen: that flag
-			 * is true for RTG/P96 setups where we still want staging when it matches the draw path. */
-			if (imagemode == 0) {
-				/* Always write_log here (not only PROFSHOT_WLOG): proves which EXE/capture path ran. */
-				write_log(_T("PROFSHOT: D3D11 profile: try native staging (renderTarget=0) monid=%d picasso=%d\n"),
-					monid, WIN32GFX_IsPicassoScreen(mon) ? 1 : 0);
-				write_log(_T("PROFSHOT: D3D11_capture begin monid=%d renderTarget=0\n"), monid);
-				got = D3D11_capture(monid, &data, &w, &h, &bits, &srcpitch, false);
-				write_log(_T("PROFSHOT: D3D11_capture end got=%d w=%d h=%d bits=%d srcpitch=%d data=%p\n"),
-					got ? 1 : 0, w, h, bits, srcpitch, got ? data : nullptr);
-				if (!got || w <= 0 || h <= 0 || (bits != 32 && bits != 24 && bits != 64)) {
-					if (got) {
-						D3D11_capture(monid, NULL, NULL, NULL, NULL, NULL, false);
-						got = false;
-						data = nullptr;
-					}
-					write_log(_T("PROFSHOT: D3D11 profile: native unusable, fallback RT (renderTarget=1)\n"));
-					write_log(_T("PROFSHOT: D3D11_capture begin monid=%d renderTarget=1\n"), monid);
-					got = D3D11_capture(monid, &data, &w, &h, &bits, &srcpitch, true);
-					write_log(_T("PROFSHOT: D3D11_capture end got=%d w=%d h=%d bits=%d srcpitch=%d data=%p\n"),
-						got ? 1 : 0, w, h, bits, srcpitch, got ? data : nullptr);
-					d3d11_unmap_rt = true;
-				} else {
-					d3d11_unmap_rt = false;
-				}
-			} else {
-				PROFSHOT_WLOG(_T("PROFSHOT: D3D11_capture begin monid=%d renderTarget=%d\n"), monid, renderTarget ? 1 : 0);
-				got = D3D11_capture(monid, &data, &w, &h, &bits, &srcpitch, renderTarget);
-				PROFSHOT_WLOG(_T("PROFSHOT: D3D11_capture end got=%d w=%d h=%d bits=%d srcpitch=%d data=%p\n"),
-					got ? 1 : 0, w, h, bits, srcpitch, got ? data : nullptr);
-			}
+			got = D3D11_capture(monid, &data, &w, &h, &bits, &srcpitch, renderTarget);
 
 			bool copied_ok = false;
 			if (got && w > 0 && h > 0 && (bits == 32 || bits == 24 || bits == 64)) {
@@ -547,8 +495,6 @@ donormal:
 				const int capw = w;
 				const int caph = h;
 				const int dpitch = (((capw * depth + 31) & ~31) / 8);
-				PROFSHOT_WLOG(_T("PROFSHOT: D3D11 copy plan cap=%dx%d dpitch=%d depth=%d bits_src=%d\n"),
-					capw, caph, dpitch, depth, bits);
 				lpvBits = xmalloc(uae_u8, dpitch * caph);
 				if (lpvBits) {
 					memset(lpvBits, 0, (size_t)dpitch * (size_t)caph);
@@ -627,7 +573,6 @@ donormal:
 			}
 			if (got)
 				D3D11_capture(monid, NULL, NULL, NULL, NULL, NULL, d3d11_unmap_rt);
-			PROFSHOT_WLOG(_T("PROFSHOT: D3D11 path after_unmap copied_ok=%d lpvBits=%p\n"), copied_ok ? 1 : 0, lpvBits);
 			if (copied_ok) {
 				d3dcaptured = true;
 			} else if (lpvBits) {
@@ -636,7 +581,6 @@ donormal:
 			}
 
 		} else if (D3D_isenabled(monid) == 1) {
-			PROFSHOT_WLOG(_T("PROFSHOT: D3D9 branch monid=%d renderTarget=%d\n"), monid, renderTarget ? 1 : 0);
 			int w, h, bits;
 			HRESULT hr;
 			D3DLOCKED_RECT l;
@@ -683,8 +627,6 @@ donormal:
 						d3dcaptured = true;
 					}
 					s->UnlockRect();
-					PROFSHOT_WLOG(_T("PROFSHOT: D3D9 copy done d3dcaptured=%d cap=%dx%d dpitch=%d surf_pitch=%d bits=%d lpvBits=%p\n"),
-						d3dcaptured ? 1 : 0, capw, caph, dpitch, (int)l.Pitch, bits, lpvBits);
 					if (!d3dcaptured && lpvBits) {
 						free(lpvBits);
 						lpvBits = NULL;
@@ -693,7 +635,6 @@ donormal:
 			}
 
 		}
-		PROFSHOT_WLOG(_T("PROFSHOT: post-D3D d3dcaptured=%d lpvBits=%p (next GDI if !captured)\n"), d3dcaptured ? 1 : 0, lpvBits);
 		if (!d3dcaptured) {
 			surface_dc = gethdc(monid);
 			surface_dc_monid = monid;
@@ -718,8 +659,6 @@ donormal:
 			// de-select offscreen_bitmap
 			SelectObject (offscreen_dc, hgdiobj);
 
-			PROFSHOT_WLOG(_T("PROFSHOT: GDI BitBlt done monid=%d dest=%dx%d surface_dc=%p\n"), monid, width, height, surface_dc);
-
 			screenshot_clear_bi();
 			bi->bmiHeader.biSize = sizeof (BITMAPINFOHEADER);
 			bi->bmiHeader.biWidth = width;
@@ -741,10 +680,6 @@ donormal:
 			if (!GetDIBits (offscreen_dc, offscreen_bitmap, 0, bi->bmiHeader.biHeight, lpvBits, bi, DIB_RGB_COLORS))
 				goto oops; // GetDIBits FAILED
 
-			PROFSHOT_WLOG(_T("PROFSHOT: GetDIBits ok bi W=%d H=%d bpp=%d planes=%d comp=%u clrUsed=%u SizeImage=%u lpvBits=%p\n"),
-				(int)bi->bmiHeader.biWidth, (int)bi->bmiHeader.biHeight, (int)bi->bmiHeader.biBitCount, (int)bi->bmiHeader.biPlanes,
-				(unsigned)bi->bmiHeader.biCompression, (unsigned)bi->bmiHeader.biClrUsed, (unsigned)bi->bmiHeader.biSizeImage, lpvBits);
-
 			releasehdc(monid, surface_dc);
 			surface_dc = NULL;
 		}
@@ -753,58 +688,14 @@ donormal:
 			goto oops;
 	}
 
-	/* Row pitch actually used in lpvBits (must match what gdbserver uses when packing RGB/JPEG). */
-	if (!screenshot_dib_row_pitch_bytes && lpvBits && bi) {
-		const LONG bw = bi->bmiHeader.biWidth;
-		const LONG bh = bi->bmiHeader.biHeight;
-		const int absw = bw < 0 ? -(int)bw : (int)bw;
-		const int absh = bh < 0 ? -(int)bh : (int)bh;
-		int rp = 0;
-		if (absh > 0 && bi->bmiHeader.biSizeImage > 0 && (bi->bmiHeader.biSizeImage % (DWORD)absh) == 0)
-			rp = (int)(bi->bmiHeader.biSizeImage / (DWORD)absh);
-		if (rp <= 0 && absw > 0 && bi->bmiHeader.biBitCount > 0)
-			rp = ((absw * (int)bi->bmiHeader.biBitCount + 31) / 32) * 4;
-		screenshot_dib_row_pitch_bytes = rp;
-	} else if (!lpvBits || !bi) {
-		screenshot_dib_row_pitch_bytes = 0;
-	}
-	PROFSHOT_WLOG(_T("PROFSHOT: dib_row_pitch final=%d imagemode=%d biW=%d biH=%d bpp=%d SizeImage=%u lpv=%p\n"),
-		screenshot_dib_row_pitch_bytes, imagemode,
-		bi ? (int)bi->bmiHeader.biWidth : 0, bi ? (int)bi->bmiHeader.biHeight : 0,
-		bi ? (int)bi->bmiHeader.biBitCount : 0, bi ? (unsigned)bi->bmiHeader.biSizeImage : 0U, lpvBits);
-	if (screenshot_profile_thumb_trace_flag && lpvBits && bi && screenshot_dib_row_pitch_bytes > 0) {
-		const int absh = bi->bmiHeader.biHeight < 0 ? -(int)bi->bmiHeader.biHeight : (int)bi->bmiHeader.biHeight;
-		const int pitch = screenshot_dib_row_pitch_bytes;
-		const uae_u8 *base = (const uae_u8 *)lpvBits;
-		const uae_u8 *row0 = base + (absh > 1 ? (size_t)(absh - 1) * (size_t)pitch : 0);
-		write_log(_T("PROFSHOT: sample16 bottom_row@%p:"), row0);
-		for (int i = 0; i < 16 && i < pitch; i++)
-			write_log(_T(" %02x"), row0[i]);
-		write_log(_T(" | top_row@%p:"), base);
-		for (int i = 0; i < 16 && i < pitch; i++)
-			write_log(_T(" %02x"), base[i]);
-		write_log(_T("\n"));
-	}
-
 	unlockrtg();
 	screenshot_prepared = TRUE;
 	return 1;
 
 oops:
-	if (screenshot_profile_thumb_trace_flag)
-		write_log(_T("PROFSHOT: screenshot_prepare FAILED (goto oops)\n"));
 	screenshot_free ();
 	unlockrtg();
 	return 0;
-}
-
-int screenshot_prepare_profile_embedded_jpeg(int monid)
-{
-	write_log(_T("PROFSHOT: screenshot_prepare_profile_embedded_jpeg_ENTRY monid=%d\n"), monid);
-	/* Must call 4-arg static implementation: screenshot_prepare(monid, 0) from C++ would be
-	 * ambiguous against screenshot_prepare(monid, struct vidbuffer*) because literal 0
-	 * is a null-pointer constant (MSVC may pick the pointer overload → imagemode 1, wrong path). */
-	return screenshot_prepare(monid, 0, NULL, false);
 }
 
 /*static*/ int screenshot_prepare(int monid, struct vidbuffer *vb) // Barto
