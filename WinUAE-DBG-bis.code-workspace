@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../mcp-winuae-emu"
+		},
+		{
+			"path": "../Amiga-C"
+		}
+	],
+	"settings": {}
+}

@@ -23,7 +23,6 @@
 
 extern BITMAPINFO* screenshot_get_bi();
 extern void* screenshot_get_bits();
-extern int screenshot_prepare(int monid, struct vidbuffer* vb);
 extern void vsync_display_render();
 
 // from main.cpp
@@ -57,6 +56,101 @@ extern int consoleopen;
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+
+/* Row stride for packed BI_RGB DIB bits: prefer stride recorded by screenshot_prepare (same memory as lpvBits). */
+static int barto_bmp_row_pitch_bytes(const BITMAPINFO* sbi, int w, int h, int bpp)
+{
+	int ret = 0;
+	const int from_gfx = screenshot_get_dib_row_pitch();
+	const int minpitch = (w > 0 && bpp > 0) ? ((w * bpp + 31) / 32) * 4 : 0;
+	if (screenshot_profile_thumb_tracing())
+		write_log(_T("PROFSHOT: barto_bmp_row_pitch IN w=%d h=%d bpp=%d minpitch=%d from_gfx=%d biSizeImage=%u\n"),
+			w, h, bpp, minpitch, from_gfx, sbi ? (unsigned)sbi->bmiHeader.biSizeImage : 0U);
+	if (from_gfx > 0 && minpitch > 0 && from_gfx >= minpitch && from_gfx <= minpitch + 16384)
+		ret = from_gfx;
+	else {
+		const DWORD sz = sbi ? sbi->bmiHeader.biSizeImage : 0;
+		if (h > 0 && sz > 0 && (sz % (DWORD)h) == 0) {
+			const int p = (int)(sz / (DWORD)h);
+			if (minpitch > 0 && p >= minpitch && p <= minpitch + 16384)
+				ret = p;
+		}
+		if (ret <= 0)
+			ret = minpitch > 0 ? minpitch : 0;
+	}
+	if (screenshot_profile_thumb_tracing())
+		write_log(_T("PROFSHOT: barto_bmp_row_pitch OUT => %d\n"), ret);
+	return ret;
+}
+
+// Profile file DMA layout must match vscode-amiga-debug (sizeofDmaRec = 58).
+// WinUAE's struct dma_rec grew (e.g. uae_u64 dat); the extension still parses the legacy 58-byte row.
+namespace {
+#pragma pack(push, 1)
+struct profile_dma_rec_barto58 {
+	uint16_t reg;
+	uint32_t dat_lo;
+	uint32_t dat_hi;
+	uint16_t size;
+	uint32_t addr;
+	uint32_t evt;
+	uint32_t agnus_evt;
+	uint32_t agnus_evt_changed;
+	int8_t unused28;
+	int16_t type;
+	uint16_t extra;
+	int8_t intlev;
+	int8_t ipl;
+	int8_t ipl2;
+	uint16_t cf_reg;
+	uint16_t cf_dat;
+	uint16_t cf_addr;
+	int32_t ciareg;
+	int32_t ciamask;
+	int8_t ciaphase_trunc;
+	int8_t ciarw_byte;
+	uint8_t pad52[3];
+	uint16_t ciavalue;
+	int8_t unused57;
+};
+#pragma pack(pop)
+static_assert(sizeof(profile_dma_rec_barto58) == 58, "profile DMA record must match Amiga Debug extension");
+
+static profile_dma_rec_barto58 pack_dma_rec_for_profile(const dma_rec& dr)
+{
+	profile_dma_rec_barto58 o{};
+	o.reg = dr.reg;
+	o.dat_lo = (uint32_t)(dr.dat & 0xffffffffULL);
+	o.dat_hi = (uint32_t)((dr.dat >> 32) & 0xffffffffULL);
+	o.size = dr.size;
+	o.addr = dr.addr;
+	o.evt = dr.evt;
+	o.agnus_evt = dr.agnus_evt;
+	o.agnus_evt_changed = dr.agnus_evt_changed;
+	o.unused28 = 0;
+	o.type = dr.type;
+	o.extra = dr.extra;
+	o.intlev = dr.intlev;
+	o.ipl = dr.ipl;
+	o.ipl2 = dr.ipl2;
+	o.cf_reg = dr.cf_reg;
+	o.cf_dat = dr.cf_dat;
+	o.cf_addr = dr.cf_addr;
+	o.ciareg = (int32_t)dr.ciareg;
+	o.ciamask = (int32_t)dr.ciamask;
+	int ph = dr.ciaphase;
+	if(ph > 127)
+		ph = 127;
+	else if(ph < -128)
+		ph = -128;
+	o.ciaphase_trunc = (int8_t)ph;
+	o.ciarw_byte = dr.ciarw ? (int8_t)1 : (int8_t)0;
+	o.pad52[0] = o.pad52[1] = o.pad52[2] = 0;
+	o.ciavalue = dr.ciavalue;
+	o.unused57 = 0;
+	return o;
+}
+} // namespace
 
 // VS2022: Test or Release/FullRelease config 
 // -s input.config=1 -s input.1.keyboard.0.button.41.GRAVE=SPC_SINGLESTEP.0    -s use_gui=no -s quickstart=a500,1 -s debugging_features=gdbserver -s filesystem=rw,dh0:c:\Users\Chuck\Documents\Visual_Studio_Code\amiga-debug\bin\dh0
@@ -329,6 +423,7 @@ namespace barto_gdbserver {
 	int profile_num_frames{};
 	int profile_frame_count{};
 	std::unique_ptr<cpu_profiler_unwind[]> profile_unwind{};
+	size_t profile_unwind_count{};
 
 	// FIX: Save trigger processname locally because deactivate_debugger() clears the global
 	std::string saved_processname;
@@ -1080,11 +1175,36 @@ namespace barto_gdbserver {
 										}
 
 										profile_unwind.reset();
+										profile_unwind_count = 0;
 										if(!profile_unwindname.empty()) {
 											if(auto f = fopen(profile_unwindname.c_str(), "rb")) {
-												profile_unwind = std::make_unique<cpu_profiler_unwind[]>(sizeText >> 1);
-												fread(profile_unwind.get(), sizeof(cpu_profiler_unwind), sizeText >> 1, f);
+												if(fseek(f, 0, SEEK_END) == 0) {
+													long fsz_long = ftell(f);
+													if(fsz_long > 0) {
+														const size_t fsz = (size_t)fsz_long;
+														const size_t esz = sizeof(cpu_profiler_unwind);
+														const size_t nel = fsz / esz;
+														if(fsz % esz != 0)
+															barto_log("GDBSERVER: profile unwind file size %zu has %zu-byte tail (entry=%zu), using %zu entries\n",
+																fsz, fsz % esz, esz, nel);
+														if(nel > 0) {
+															rewind(f);
+															profile_unwind = std::make_unique<cpu_profiler_unwind[]>(nel);
+															const size_t nr = fread(profile_unwind.get(), esz, nel, f);
+															profile_unwind_count = nr;
+															if(nr != nel)
+																barto_log("GDBSERVER: profile unwind short read %zu/%zu\n", nr, nel);
+															if(sizeText > 0 && (sizeText >> 1) != profile_unwind_count)
+																barto_log("GDBSERVER: unwind entries %zu vs sizeText/2 %u — bounds use min(table, text span)\n",
+																	profile_unwind_count, (unsigned)(sizeText >> 1));
+														}
+													} else {
+														barto_log("GDBSERVER: profile unwind file empty or invalid size\n");
+													}
+												}
 												fclose(f);
+											} else {
+												barto_log("GDBSERVER: cannot open profile unwind file '%s'\n", profile_unwindname.c_str());
 											}
 										}
 
@@ -1124,8 +1244,9 @@ namespace barto_gdbserver {
 												const auto w = sbi->bmiHeader.biWidth;
 												const auto signedHeight = sbi->bmiHeader.biHeight;
 												const auto h = signedHeight < 0 ? -signedHeight : signedHeight;
-												const auto bytesPerPixel = sbi->bmiHeader.biBitCount / 8;
-												const auto pitch = sbi->bmiHeader.biSizeImage / h;
+												const auto bpp = sbi->bmiHeader.biBitCount;
+												const auto bytesPerPixel = bpp / 8;
+												const auto pitch = barto_bmp_row_pitch_bytes(sbi, (int)w, (int)h, (int)bpp);
 												// Normalize to top-down RGB output. Source is usually BGR/BGRA.
 												auto bits = std::make_unique<uint8_t[]>(w * 3 * h);
 												for(int y = 0; y < h; y++) {
@@ -2126,8 +2247,20 @@ start_profile:
 				barto_debug_idle_count = 1;
 			}
 
-			// start profiler
-			start_cpu_profiler(baseText, baseText + sizeText, profile_unwind.get());
+			// start profiler — span must not exceed ELF .text size implied by the .unwind file
+			// (one row per byte there). First Amiga hunk sizeText is often larger than .text, which
+			// would emit PC offsets past SourceMap.lines in vscode-amiga-debug (t.frames crash).
+			uaecptr profile_span_bytes = sizeText;
+			size_t unwind_word_slots = profile_unwind_count ? (profile_unwind_count + 1) / 2 : 0;
+			if(profile_unwind && profile_unwind_count > 0) {
+				const uaecptr uwbytes = (uaecptr)profile_unwind_count;
+				if(uwbytes < profile_span_bytes) {
+					profile_span_bytes = uwbytes;
+					barto_log("PRF: span capped to unwind bytes 0x%x (sizeText 0x%x)\n",
+						(unsigned)profile_span_bytes, (unsigned)sizeText);
+				}
+			}
+			start_cpu_profiler(baseText, baseText + profile_span_bytes, profile_unwind.get(), unwind_word_slots);
 			debug_dma = 1;
 			profile_start_cycles = static_cast<uae_u32>(get_cycles() / cpucycleunit);
 			//barto_log("GDBSERVER: Start CPU Profiler @ %u cycles\n", get_cycles() / cpucycleunit);
@@ -2185,12 +2318,15 @@ start_profile:
 			}
 			profile_custom_agacolors = nullptr;
 
-			// DMA
-			int dmarec_size = sizeof(dma_rec);
-			int dmarec_count = NR_DMA_REC_HPOS_OUT * NR_DMA_REC_VPOS_OUT;
+			// DMA (legacy 58-byte rows for Amiga Debug extension compatibility)
+			const int dmarec_size = (int)sizeof(profile_dma_rec_barto58);
+			const int dmarec_count = NR_DMA_REC_HPOS_OUT * NR_DMA_REC_VPOS_OUT;
+			auto dma_profile = std::make_unique<profile_dma_rec_barto58[]>(dmarec_count);
+			for(int i = 0; i < dmarec_count; i++)
+				dma_profile[i] = pack_dma_rec_for_profile(dma_out[i]);
 			fwrite(&dmarec_size, sizeof(int), 1, profile_outfile);
 			fwrite(&dmarec_count, sizeof(int), 1, profile_outfile);
-			fwrite(dma_out.get(), sizeof(dma_rec), NR_DMA_REC_HPOS_OUT * NR_DMA_REC_VPOS_OUT, profile_outfile);
+			fwrite(dma_profile.get(), sizeof(profile_dma_rec_barto58), (size_t)dmarec_count, profile_outfile);
 
 			// resources
 			int resource_size = sizeof(barto_debug_resource);
@@ -2206,52 +2342,106 @@ start_profile:
 			int profile_count = get_cpu_profiler_output_count();
 			fwrite(&profile_count, sizeof(int), 1, profile_outfile);
 			fwrite(get_cpu_profiler_output(), sizeof(uae_u32), profile_count, profile_outfile);
-			// write screenshot
-			vsync_display_render(); // make sure current frame is rendered, this may be a line or so too early, but don't know how to hook render
-			int monid = getfocusedmonitor();
-			AmigaMonitor* mon = &AMonitors[monid];
-			vidbuf_description* avidinfo = &adisplays[monid].gfxvidinfo;
-			vidbuffer* vb = &avidinfo->drawbuffer; // too old
-			// just write JPEGs if we do multi-frame profile (file too big with PNGs)
-			if(screenshot_prepare(monid, vb) == 1) {
-				auto bi = screenshot_get_bi();
-				auto bi_bits = (const uint8_t*)screenshot_get_bits();
-				if(bi->bmiHeader.biBitCount == 24) {
-					// need to flip bits and swap rgb channels
-					const auto w = bi->bmiHeader.biWidth;
-					const auto h = bi->bmiHeader.biHeight;
-					const auto pitch = bi->bmiHeader.biSizeImage / bi->bmiHeader.biHeight;
-					auto bits = std::make_unique<uint8_t[]>(w * 3 * h);
-					for(int y = 0; y < bi->bmiHeader.biHeight; y++) {
-						for(int x = 0; x < bi->bmiHeader.biWidth; x++) {
-							bits[y * w * 3 + x * 3 + 0] = bi_bits[(h - 1 - y) * pitch + x * 3 + 2];
-							bits[y * w * 3 + x * 3 + 1] = bi_bits[(h - 1 - y) * pitch + x * 3 + 1];
-							bits[y * w * 3 + x * 3 + 2] = bi_bits[(h - 1 - y) * pitch + x * 3 + 0];
+			// write screenshot: capture the Win32 surface (imagemode 0 / donormal), not the raw
+			// drawbuffer — that matches what the user sees and avoids wrong scale/filter vs window.
+			// JPEG quality > 90 disables 4:2:0 chroma subsampling in stb_image_write (less "dirty" UI).
+			{
+				int shot_size = 0;
+				int shot_type = 0; // JPG
+				constexpr size_t shot_cap = 2'000'000;
+				auto shot_buf = std::make_unique<uint8_t[]>(shot_cap);
+				write_log("PROFSHOT: gdb thumb ==== BEGIN frame %d/%d out=%s shot_cap=%zu\n",
+					profile_frame_count, profile_num_frames, profile_outname.c_str(), shot_cap);
+				vsync_display_render(); // make sure current frame is rendered, this may be a line or so too early, but don't know how to hook render
+				int monid = getfocusedmonitor();
+				write_log(_T("PROFSHOT: gdb vsync_display_render done monid=%d\n"), monid);
+				screenshot_profile_thumb_trace(1);
+				const int prep = screenshot_prepare_profile_embedded_jpeg(monid);
+				write_log(_T("PROFSHOT: gdb screenshot_prepare_profile_embedded_jpeg(monid=%d) => %d\n"), monid, prep);
+				if(prep == 1) {
+					auto* bi = screenshot_get_bi();
+					auto* bi_bits = (const uint8_t*)screenshot_get_bits();
+					write_log(_T("PROFSHOT: gdb after prepare bi=%p bits=%p screenshot_get_dib_row_pitch=%d\n"),
+						(void*)bi, (const void*)bi_bits, screenshot_get_dib_row_pitch());
+					if(bi) {
+						write_log(_T("PROFSHOT: gdb BITMAPINFOHEADER biSize=%u W=%d H=%d Planes=%u BitCount=%u Comp=%u SizeImage=%u clrUsed=%u clrImp=%u\n"),
+							(unsigned)bi->bmiHeader.biSize, (int)bi->bmiHeader.biWidth, (int)bi->bmiHeader.biHeight,
+							(unsigned)bi->bmiHeader.biPlanes, (unsigned)bi->bmiHeader.biBitCount, (unsigned)bi->bmiHeader.biCompression,
+							(unsigned)bi->bmiHeader.biSizeImage, (unsigned)bi->bmiHeader.biClrUsed, (unsigned)bi->bmiHeader.biClrImportant);
+					}
+					if(bi && bi_bits && (bi->bmiHeader.biBitCount == 24 || bi->bmiHeader.biBitCount == 32)) {
+						const int w = bi->bmiHeader.biWidth;
+						const int signedHeight = bi->bmiHeader.biHeight;
+						const int h = signedHeight < 0 ? -signedHeight : signedHeight;
+						write_log(_T("PROFSHOT: gdb layout w=%d signedH=%d abs_h=%d\n"), w, signedHeight, h);
+						if(w > 0 && h > 0) {
+							const int bpp = bi->bmiHeader.biBitCount;
+							const int bytesPerPixel = bpp / 8;
+							const int pitch = barto_bmp_row_pitch_bytes(bi, w, h, bpp);
+							const int minpitch_formula = ((w * bpp + 31) / 32) * 4;
+							const size_t span_est = (size_t)pitch * (size_t)h;
+							write_log(_T("PROFSHOT: gdb pack bpp=%d bytesPerPixel=%d pitch=%d minpitch_formula=%d span_est=%zu biSizeImage=%u\n"),
+								bpp, bytesPerPixel, pitch, minpitch_formula, span_est, bi ? (unsigned)bi->bmiHeader.biSizeImage : 0U);
+							if(bi && (unsigned)bi->bmiHeader.biSizeImage > 0 && span_est > (size_t)bi->bmiHeader.biSizeImage + (size_t)pitch)
+								write_log(_T("PROFSHOT: gdb WARN span_est>biSizeImage+pitch (possible OOB read)\n"));
+							auto bits = std::make_unique<uint8_t[]>(w * 3 * h);
+							int min_si = 0, max_si = 0;
+							uint32_t xorpat = 0;
+							bool first_si = true;
+							for(int y = 0; y < h; y++) {
+								const int srcY = signedHeight > 0 ? (h - 1 - y) : y;
+								for(int x = 0; x < w; x++) {
+									const int srcIndex = srcY * pitch + x * bytesPerPixel;
+									if(first_si) {
+										min_si = max_si = srcIndex;
+										first_si = false;
+									} else {
+										if(srcIndex < min_si) min_si = srcIndex;
+										if(srcIndex > max_si) max_si = srcIndex;
+									}
+									bits[y * w * 3 + x * 3 + 0] = bi_bits[srcIndex + 2];
+									bits[y * w * 3 + x * 3 + 1] = bi_bits[srcIndex + 1];
+									bits[y * w * 3 + x * 3 + 2] = bi_bits[srcIndex + 0];
+									xorpat ^= (uint32_t)bi_bits[srcIndex + 0] ^ ((uint32_t)bi_bits[srcIndex + 1] << 8) ^ ((uint32_t)bi_bits[srcIndex + 2] << 16);
+								}
+							}
+							write_log(_T("PROFSHOT: gdb srcIndex range [%d .. %d] last_byte=%d biSizeImage=%u OOB=%s xor32=%08x\n"),
+								min_si, max_si, max_si + bytesPerPixel - 1, (unsigned)bi->bmiHeader.biSizeImage,
+								(bi->bmiHeader.biSizeImage > 0 && (unsigned)(max_si + bytesPerPixel) > bi->bmiHeader.biSizeImage) ? _T("YES") : _T("no"),
+								(unsigned)xorpat);
+							struct write_context_t {
+								uint8_t* dst;
+								int size = 0;
+								int cap;
+							};
+							write_context_t wc{ shot_buf.get(), 0, (int)shot_cap };
+							auto write_func = [](void* _context, void* data, int size) {
+								auto* context = (write_context_t*)_context;
+								if(context->size + size > context->cap)
+									return;
+								memcpy(context->dst + context->size, data, size);
+								context->size += size;
+							};
+							const int quality = 96;
+							stbi_write_jpg_to_func(write_func, &wc, w, h, 3, bits.get(), quality);
+							shot_size = (wc.size + 3) & ~3;
+							write_log(_T("PROFSHOT: gdb stbi JPEG raw_size=%d shot_size=%d quality=%d near_cap=%s\n"),
+								wc.size, shot_size, quality, (wc.size > (int)shot_cap - 65536) ? _T("YES") : _T("no"));
+						} else {
+							write_log(_T("PROFSHOT: gdb skip RGB: invalid w/h\n"));
 						}
-					}
-					struct write_context_t {
-						uint8_t data[2'000'000]{};
-						int size = 0;
-						int type = 0;
-					};
-					auto write_context = std::make_unique<write_context_t>();
-					auto write_func = [](void* _context, void* data, int size) {
-						auto context = (write_context_t*)_context;
-						memcpy(&context->data[context->size], data, size);
-						context->size += size;
-					};
-					if(profile_num_frames > 1) {
-						stbi_write_jpg_to_func(write_func, write_context.get(), w, h, 3, bits.get(), 50);
-						write_context->type = 0; // JPG
 					} else {
-						stbi_write_png_to_func(write_func, write_context.get(), w, h, 3, bits.get(), w * 3);
-						write_context->type = 1; // PNG
+						write_log(_T("PROFSHOT: gdb skip RGB: bi/bits null or bpp=%d\n"), bi ? (int)bi->bmiHeader.biBitCount : -1);
 					}
-					write_context->size = (write_context->size + 3) & ~3; // pad to 32bit
-					fwrite(&write_context->size, sizeof(int), 1, profile_outfile);
-					fwrite(&write_context->type, sizeof(int), 1, profile_outfile);
-					fwrite(write_context->data, 1, write_context->size, profile_outfile);
+				} else {
+					write_log(_T("PROFSHOT: gdb screenshot_prepare FAILED (prep=%d)\n"), prep);
 				}
+				screenshot_profile_thumb_trace(0);
+				write_log(_T("PROFSHOT: gdb thumb ==== END embedded_jpeg_bytes=%d\n"), shot_size);
+				fwrite(&shot_size, sizeof(int), 1, profile_outfile);
+				fwrite(&shot_type, sizeof(int), 1, profile_outfile);
+				if(shot_size > 0)
+					fwrite(shot_buf.get(), 1, (size_t)shot_size, profile_outfile);
 			}
 
 			if(profile_frame_count == profile_num_frames) {

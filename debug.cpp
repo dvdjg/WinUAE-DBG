@@ -1966,7 +1966,9 @@ void debug_draw(uae_u8* buf, uae_u8* genlock, int line, int width, int height, u
 
 	if (heatmap) {
 		debug_draw_heatmap(buf, genlock, line, width, height, xredcolors, xgreencolors, xbluecolors);
-	} else if (dma_record_data) { // BARTO: was (debug_dma > 1 && dma_record[0])
+	} else if (dma_record_data && debug_dma > 1) {
+		/* dma_record_data is also allocated during GDB profiling (debug_dma==1); only draw
+		 * the cycle/DMA strip when the user has enabled the visual DMA debugger (mode > 1). */
 		debug_draw_cycles(buf, genlock, line, width, height, xredcolors, xgreencolors, xbluecolors);
 	}
 }

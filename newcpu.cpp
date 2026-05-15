@@ -123,12 +123,21 @@ evt_t cpu_profiler_last_cycles = 0;
 cpu_profiler_unwind* cpu_profiler_unwind_buffer = nullptr; // for each possible code location (every 2 bytes) 2 s16: cfa, return address
 #include <vector>
 std::vector<uint32_t> cpu_profiler_output;
+static size_t cpu_profiler_unwind_nelms;
 
-void start_cpu_profiler(uaecptr start_addr, uaecptr end_addr, cpu_profiler_unwind* unwind_buffer) {
+void start_cpu_profiler(uaecptr start_addr, uaecptr end_addr, cpu_profiler_unwind* unwind_buffer, size_t unwind_nelem) {
 	cpu_profiler_start_addr = start_addr;
 	cpu_profiler_end_addr = end_addr;
 	cpu_profiler_last_cycles = get_cycles();
 	cpu_profiler_unwind_buffer = unwind_buffer;
+	cpu_profiler_unwind_nelms = 0;
+	if(unwind_buffer) {
+		size_t span = (end_addr > start_addr) ? (size_t)((end_addr - start_addr) >> 1) : 0;
+		size_t n = unwind_nelem != 0 ? unwind_nelem : span;
+		if(span > 0 && n > span)
+			n = span;
+		cpu_profiler_unwind_nelms = n;
+	}
 	cpu_profiler_output.clear();
 }
 
@@ -145,6 +154,7 @@ void stop_cpu_profiler() {
 	cpu_profiler_end_addr = 0;
 	cpu_profiler_last_cycles = 0;
 	cpu_profiler_unwind_buffer = nullptr;
+	cpu_profiler_unwind_nelms = 0;
 }
 
 struct cpu_profiler {
@@ -185,7 +195,10 @@ struct cpu_profiler {
 					callstack[callstack_depth++] = pc - cpu_profiler_start_addr;
 					if(!cpu_profiler_unwind_buffer) // null for savestate profiling
 						break;
-					const auto& unwind = cpu_profiler_unwind_buffer[(pc - cpu_profiler_start_addr) >> 1];
+					size_t uidx = (size_t)((pc - cpu_profiler_start_addr) >> 1);
+					if(uidx >= cpu_profiler_unwind_nelms)
+						break;
+					const auto& unwind = cpu_profiler_unwind_buffer[uidx];
 					if(unwind.cfa == ~0 || unwind.ra == ~0) break; // should not happen
 					uae_u32 new_cfa{};
 					switch(unwind.cfa >> 12) {

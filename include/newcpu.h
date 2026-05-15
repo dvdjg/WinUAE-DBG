@@ -885,7 +885,7 @@ struct cpu_profiler_unwind {
 	int16_t ra; // ofs from cfa
 };
 #pragma pack(pop)
-extern void start_cpu_profiler(uaecptr start_addr, uaecptr end_addr, cpu_profiler_unwind* unwind_buffer);
+extern void start_cpu_profiler(uaecptr start_addr, uaecptr end_addr, cpu_profiler_unwind* unwind_buffer, size_t unwind_nelem);
 extern uint32_t get_cpu_profiler_output_count();
 extern const uint32_t* get_cpu_profiler_output(); // format: callstack (offsets), ..., ~0 - cycles
 extern void stop_cpu_profiler();

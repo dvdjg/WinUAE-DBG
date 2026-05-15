@@ -301,7 +301,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;winio.lib;setupapi.lib;wininet.lib;shlwapi.lib;libpng16.lib;lglcd.lib;openal32.lib;portaudio_x86.lib;vfw32.lib;wtsapi32.lib;enet.lib;lzmalib.lib;prowizard.lib;libFLAC_static.lib;hid.lib;zlibstat.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;winio.lib;setupapi.lib;wininet.lib;shlwapi.lib;libpng16.lib;lglcd.lib;openal32.lib;portaudio_x86.lib;vfw32.lib;wtsapi32.lib;enet.lib;lzmalib.lib;prowizard.lib;libFLAC_static.lib;hid.lib;zlibstat.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories);$(SolutionDir)\..\lib\</AdditionalLibraryDirectories>
@@ -385,7 +385,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;winio.lib;setupapi.lib;wininet.lib;shlwapi.lib;libpng16.lib;lglcd.lib;openal32.lib;portaudio_x86.lib;vfw32.lib;wtsapi32.lib;enet.lib;lzmalib.lib;prowizard.lib;libFLAC_static.lib;hid.lib;zlibstat.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;winio.lib;setupapi.lib;wininet.lib;shlwapi.lib;libpng16.lib;lglcd.lib;openal32.lib;portaudio_x86.lib;vfw32.lib;wtsapi32.lib;enet.lib;lzmalib.lib;prowizard.lib;libFLAC_static.lib;hid.lib;zlibstat.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories);$(SolutionDir)\..\lib\</AdditionalLibraryDirectories>
@@ -469,7 +469,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -546,7 +546,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -622,7 +622,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -698,7 +698,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -775,7 +775,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;winio.lib;setupapi.lib;wininet.lib;shlwapi.lib;libpng16.lib;lglcd.lib;openal32.lib;portaudio_x86.lib;vfw32.lib;wtsapi32.lib;enet.lib;lzmalib.lib;prowizard.lib;libFLAC_static.lib;hid.lib;zlibstat.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;winio.lib;setupapi.lib;wininet.lib;shlwapi.lib;libpng16.lib;lglcd.lib;openal32.lib;portaudio_x86.lib;vfw32.lib;wtsapi32.lib;enet.lib;lzmalib.lib;prowizard.lib;libFLAC_static.lib;hid.lib;zlibstat.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories);$(SolutionDir)\..\lib\</AdditionalLibraryDirectories>
@@ -857,7 +857,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;XINPUT9_1_0.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -934,7 +934,7 @@
       <Culture>0x0409</Culture>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;softfloat.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>ws2_32.lib;winmm.lib;comctl32.lib;version.lib;vfw32.lib;msacm32.lib;dsound.lib;dinput8.lib;d3d9.lib;d3dx9.lib;setupapi.lib;wininet.lib;shlwapi.lib;zlibstat.lib;portaudio_x64.lib;openal32.lib;libpng16.lib;lglcd.lib;wtsapi32.lib;enet_x64.lib;prowizard_x64.lib;lzmalib.lib;libFLAC_static.lib;hid.lib;Iphlpapi.lib;luastatic.lib;libmpeg2_ff.lib;gdiplus.lib;effects11.lib;Msimg32.lib;Dwmapi.lib;mt32emu.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <ShowProgress>NotSet</ShowProgress>
       <OutputFile>$(OutDir)$(TargetName)$(TargetExt)</OutputFile>
       <SuppressStartupBanner>true</SuppressStartupBanner>
@@ -1973,6 +1973,9 @@
     <!-- Optional: other common installs (skipped if folder missing). Restore stock with winuae-gdb-bartman-stock.exe → winuae-gdb.exe -->
     <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!='' and Exists('$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9\bin\$(AmigaDebugBinFolder)') and '$(AmigaDebugExtensionRoot)'!='$(UserProfile)\.cursor\extensions\bartmanabyss.amiga-debug-1.7.9'" />
     <Copy SourceFiles="$(OutDir)$(TargetName)$(TargetExt)" DestinationFiles="$(UserProfile)\.vscode\extensions\bartmanabyss.amiga-debug-1.8.2\bin\$(AmigaDebugBinFolder)\winuae-gdb.exe" SkipUnchangedFiles="true" Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!='' and Exists('$(UserProfile)\.vscode\extensions\bartmanabyss.amiga-debug-1.8.2\bin\$(AmigaDebugBinFolder)')" />
+    <!-- Any bartmanabyss.amiga-debug-* version (Cursor/VS Code often bumps the folder name). -->
+    <Exec Condition="Exists('$(OutDir)$(TargetName)$(TargetExt)') and '$(AmigaDebugBinFolder)'!=''"
+      Command="powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File &quot;$(MSBuildThisFileDirectory)deploy-winuae-to-amiga-debug.ps1&quot; -BuiltExe &quot;$([System.IO.Path]::GetFullPath('$(OutDir)$(TargetName)$(TargetExt)'))&quot; -BinSubdir &quot;$(AmigaDebugBinFolder)&quot;" />
   </Target>
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
