@@ -125,6 +125,46 @@ void debug_gdb_reset_process_entry_flag (void)
 	gdb_notify_process_entry = false;
 }
 
+// Helper: match process name handling optional ':' prefix (suffix-match mode).
+// Returns true if name (or CLI command) matches processname.
+// ':' prefix semantics: match any process whose name *ends with* the pattern.
+static bool gdb_match_process_name (const char *name, const uae_char *command, const uae_char *processname)
+{
+	if (!processname)
+		return false;
+
+	bool match_suffix = (processname[0] == ':');
+	const char *pattern = match_suffix ? processname + 1 : processname;
+	size_t plen = strlen (pattern);
+
+	// Compare ln_Name
+	if (name) {
+		size_t nlen = strlen (name);
+		if (match_suffix) {
+			if (nlen >= plen && !_stricmp (name + nlen - plen, pattern))
+				return true;
+		} else {
+			if (!_stricmp (name, pattern))
+				return true;
+		}
+	}
+
+	// Compare CLI command (BSTR: first byte = length)
+	if (command && command[0]) {
+		uae_u8 cmd_len = ((const uae_u8 *)command)[0];
+		const char *cmd = (const char *)command + 1;
+		if (match_suffix) {
+			if (cmd_len >= (uae_u8)plen && !_strnicmp (cmd + cmd_len - plen, pattern, plen))
+				return true;
+		} else {
+			if (cmd_len == (uae_u8)plen && !_strnicmp (cmd, pattern, plen))
+				return true;
+		}
+	}
+
+	return false;
+}
+
 void deactivate_debugger (void)
 {
 	inside_debugger = 0;
@@ -7962,7 +8002,7 @@ void debug (void)
 								seglist = BPTR2APTR(get_long_debug (activetask + 128));
 								seglist = BPTR2APTR(get_long_debug (seglist + 12));
 							}
-							if (activetask == processptr || (processname && (!stricmp (name, processname) || (command && command[0] && !strnicmp (command + 1, processname, ((uae_u8*)command)[0]) && processname[command[0]] == 0)))) {
+							if (activetask == processptr || gdb_match_process_name (name, command, processname)) {
 								while (seglist) {
 									uae_u32 size = get_long_debug (seglist - 4) - 4;
 									if (pc >= (seglist + 4) && pc < (seglist + size)) {

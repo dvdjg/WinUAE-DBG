@@ -1979,23 +1979,32 @@ namespace barto_gdbserver {
 										} else {
 											// Store ELF address for potential deferred relocation
 											breakpoint_elf_addresses.push_back(adr);
+											bool breakpointSet = false;
 											for(auto& bpn : bpnodes) {
 												if(bpn.enabled)
 													continue;
 											// Store original ELF address if no relocation yet
 											// Will be relocated later when qOffsets provides baseText
 											bpn.value1 = relocatedAdr;
+											bpn.value2 = 0;
+											bpn.mask = 0xffffffff;
 											bpn.type = BREAKPOINT_REG_PC;
 											bpn.oper = BREAKPOINT_CMP_EQUAL;
+											bpn.opersigned = false;
+											bpn.cnt = 0;
+											bpn.chain = -1;
 											bpn.enabled = 1;
 											trace_mode = TRACE_CHECKONLY; // Enable breakpoint checking
 											barto_log("Z0: BP set at 0x%x, trace_mode=TRACE_CHECKONLY\n", relocatedAdr);
 											print_breakpoints();
 											response += "OK";
+											breakpointSet = true;
 											break;
 											}
-											barto_log("Z0: ERROR no free breakpoint slot for 0x%x\n", relocatedAdr);
-											response += "E27";
+											if(!breakpointSet) {
+												barto_log("Z0: ERROR no free breakpoint slot for 0x%x\n", relocatedAdr);
+												response += "E27";
+											}
 										}
 									} else
 										response += "E01";
@@ -2547,8 +2556,13 @@ start_profile:
 						return;
 					auto& bpn = bpnodes[slot];
 					bpn.value1 = addr;
+					bpn.value2 = 0;
+					bpn.mask = 0xffffffff;
 					bpn.type = BREAKPOINT_REG_PC;
 					bpn.oper = BREAKPOINT_CMP_EQUAL;
+					bpn.opersigned = false;
+					bpn.cnt = 0;
+					bpn.chain = -1;
 					bpn.enabled = 1;
 					barto_log("GDBSERVER: Breakpoint for %s at 0x%x (slot %d)\n", label, addr, slot);
 				};
