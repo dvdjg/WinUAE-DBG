@@ -5624,6 +5624,61 @@ STATIC_INLINE uaecptr BPTR2APTR (uaecptr addr)
 {
 	return addr << 2;
 }
+
+// Scan Exec task lists and return the Process whose segList range contains <pc>.
+// Returns 0 if no matching process is found.
+uaecptr gdb_find_process_for_pc (uaecptr pc)
+{
+	uaecptr execbase = get_long_debug (4);
+	if (!execbase) return 0;
+
+	// Helper: check if a single task's segList contains pc
+	auto check_task = [pc] (uaecptr task) -> uaecptr {
+		if (!task) return 0;
+		if (get_byte_debug (task + 8) != 13) return 0; // NT_PROCESS = 13
+		// Try CLI segList first
+		uaecptr cli = BPTR2APTR (get_long_debug (task + 172));
+		uaecptr seglist = 0;
+		if (cli) {
+			seglist = BPTR2APTR (get_long_debug (cli + 60));
+		} else {
+			seglist = BPTR2APTR (get_long_debug (task + 128));
+			if (seglist)
+				seglist = BPTR2APTR (get_long_debug (seglist + 12));
+		}
+		while (seglist) {
+			uae_u32 size = get_long_debug (seglist - 4) - 4;
+			if (pc >= (seglist + 4) && pc < (seglist + size))
+				return task;
+			seglist = BPTR2APTR (get_long_debug (seglist));
+		}
+		return 0;
+	};
+
+	// Check current task first
+	uaecptr activetask = get_long_debug (execbase + 276);
+	uaecptr found = check_task (activetask);
+	if (found) return found;
+
+	// Iterate TaskReady list (execbase + 406) and TaskWait list (execbase + 420)
+	auto iterate_list = [&] (uaecptr list_head) -> uaecptr {
+		uaecptr node = get_long_debug (list_head);
+		while (node) {
+			uaecptr next = get_long_debug (node);
+			if (!next) break;
+			found = check_task (node);
+			if (found) return found;
+			node = next;
+		}
+		return 0;
+	};
+
+	found = iterate_list (execbase + 406);
+	if (found) return found;
+	found = iterate_list (execbase + 420);
+	return found;
+}
+
 static TCHAR *BSTR2CSTR (uae_u8 *bstr)
 {
 	TCHAR *s;
@@ -7984,6 +8039,10 @@ void debug (void)
 							bp = -1;
 					}
 				} else if (trace_mode == TRACE_CHECKONLY && (processptr || processname) && !isrom(m68k_getpc())) {
+					// Performance: once process entered, skip expensive re-check on every instruction
+					if(gdb_process_range_entered) {
+						bp = 0;
+					} else {
 					uaecptr execbase = get_long_debug (4);
 					uaecptr activetask = get_long_debug (execbase + 276);
 					if(activetask) { // BARTO
@@ -8006,21 +8065,16 @@ void debug (void)
 								while (seglist) {
 									uae_u32 size = get_long_debug (seglist - 4) - 4;
 									if (pc >= (seglist + 4) && pc < (seglist + size)) {
-										// First entry into debugged process: stop once (Bartman bp=-1).
-										// After that only stop on GDB breakpoints (bpnum >= 0), not every insn.
-										if (!gdb_process_range_entered) {
-											gdb_process_range_entered = true;
-											gdb_notify_process_entry = true;
-											bp = -1;
-										} else {
-											bp = 0;
-										}
+										gdb_process_range_entered = true;
+										gdb_notify_process_entry = true;
+										bp = -1;
 										break;
 									}
 									seglist = BPTR2APTR(get_long_debug (seglist));
 								}
 							}
 						}
+					}
 					}
 				}
 			}

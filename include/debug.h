@@ -65,6 +65,16 @@ extern int debugger_used;
 
 extern void debug (void);
 extern void debug_gdb_reset_process_entry_flag (void);
+
+// Shared process detection API (used by debug.cpp and barto_gdbserver.cpp)
+// processname may have ':' prefix → suffix match; without → exact match.
+extern uaecptr processptr;
+extern uae_char *processname;
+extern bool gdb_notify_process_entry;
+extern bool gdb_process_range_entered;
+bool gdb_match_process_name(const char *name, const uae_char *command, const uae_char *processname);
+// Find any loaded process whose segList range contains <pc>. Returns Process addr or 0.
+uaecptr gdb_find_process_for_pc(uaecptr pc);
 extern void debugger_change (int mode);
 extern void activate_debugger(void);
 extern void activate_debugger_new(void);

@@ -141,6 +141,7 @@ namespace barto_gdbserver {
 	constexpr uaecptr ELF_TEXT_BASE = 0x400;
 
 	static bool in_handle_packet = false;
+	static bool step_mode_pending = false;
 	struct tracker {
 		tracker() { backup = in_handle_packet; in_handle_packet = true; }
 		~tracker() { in_handle_packet = backup; }
@@ -367,10 +368,16 @@ namespace barto_gdbserver {
 	// Store original ELF addresses for breakpoints (for deferred relocation)
 	std::vector<uaecptr> breakpoint_elf_addresses;
 	
-	// Relocate all existing breakpoints when baseText is calculated
+	// Store original ELF addresses for watchpoints (Z2/Z3/Z4 deferred relocation)
+	struct WatchpointElf {
+		uaecptr addr; int size; int rwi;
+	};
+	std::vector<WatchpointElf> watchpoint_elf_addresses;
+	
+	// Relocate all existing Z0 / Z2/Z3/Z4 when baseText is calculated
 	void relocate_breakpoints() {
-		barto_log("RELOC: relocate_breakpoints() called. baseText=0x%x, pending=%d\n", 
-			baseText, (int)breakpoint_elf_addresses.size());
+		barto_log("RELOC: relocate_breakpoints() called. baseText=0x%x, pending BPs=%d, pending WPs=%d\n", 
+			baseText, (int)breakpoint_elf_addresses.size(), (int)watchpoint_elf_addresses.size());
 		if(baseText < ELF_TEXT_BASE) {
 			barto_log("RELOC: SKIP - baseText(0x%x) < ELF_TEXT_BASE(0x%x)\n", baseText, ELF_TEXT_BASE);
 			return;
@@ -378,6 +385,8 @@ namespace barto_gdbserver {
 		uaecptr loadOffset = baseText - ELF_TEXT_BASE;
 		barto_log("RELOC: loadOffset = 0x%x\n", loadOffset);
 		int relocated = 0;
+
+		// Relocate Z0 breakpoints (bpnodes)
 		for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
 			uaecptr elfAddr = breakpoint_elf_addresses[i];
 			uaecptr relocatedAddr = 0;
@@ -396,7 +405,31 @@ namespace barto_gdbserver {
 				}
 			}
 		}
-		barto_log("RELOC: Done. Relocated %d breakpoints\n", relocated);
+
+		// Relocate Z2/Z3/Z4 watchpoints (mwnodes)
+		for(size_t i = 0; i < watchpoint_elf_addresses.size(); i++) {
+			uaecptr elfAddr = watchpoint_elf_addresses[i].addr;
+			int wpSize = watchpoint_elf_addresses[i].size;
+			int wpRwi = watchpoint_elf_addresses[i].rwi;
+			uaecptr relocatedAddr = 0;
+			if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000)
+				relocatedAddr = elfAddr + loadOffset;
+			else if(elfAddr < ELF_TEXT_BASE)
+				relocatedAddr = elfAddr + baseText;
+			else
+				continue;
+			for(auto& mwn : mwnodes) {
+				if(mwn.size && mwn.addr == elfAddr && mwn.rwi == wpRwi) {
+					barto_log("RELOC: WP[%d] 0x%x -> 0x%x (size=%d rwi=%d)\n", 
+						(int)i, elfAddr, relocatedAddr, wpSize, wpRwi);
+					mwn.addr = relocatedAddr;
+					relocated++;
+					break;
+				}
+			}
+		}
+
+		barto_log("RELOC: Done. Relocated %d breakpoints/watchpoints\n", relocated);
 	}
 	
 	std::string profile_outname;
@@ -561,6 +594,8 @@ namespace barto_gdbserver {
 					}
 				} else {
 					matches = (_stricmp(cmd_name, match_pattern) == 0);
+					if(!matches && cmd_name[0] == ':')
+						matches = (_stricmp(cmd_name + 1, match_pattern) == 0);
 				}
 			}
 			
@@ -607,6 +642,9 @@ namespace barto_gdbserver {
 		if(baseText >= 0xf00000)
 			return true;
 		if(sizeText > 0 && sizeText < 0x200)
+			return true;
+		// FIX: baseText==0 means qOffsets was never successfully resolved
+		if(baseText == 0)
 			return true;
 		return false;
 	}
@@ -1022,6 +1060,14 @@ namespace barto_gdbserver {
 					response += "S05"; // SIGTRAP
 					debugger_state = state::debugging;
 					activate_debugger();
+				} else if(!request.empty() && request[0] == '?') {
+					// GDB 'halt reason' query — sent during target remote.
+					// Must always return a proper stop reply ($S05 / $T05) or GDB
+					// fails the connection setup and never sends vCont;c, blocking
+					// the emulation forever.
+					ack = "+";
+					response = "$";
+					response += "S05";
 				} else if(!request.empty() && request[0] == '$') {
 					ack = "-";
 					auto end = request.find('#');
@@ -1035,7 +1081,11 @@ namespace barto_gdbserver {
 								barto_log("GDBSERVER: -> %s\n", request.c_str());
 								ack = "+";
 								response = "$";
-								if(request.substr(0, strlen("qSupported")) == "qSupported") {
+								if(request == "?") {
+									// Halt reason query — sent as $?#67 during target remote.
+									// Must return a proper stop reply or GDB will fail the connection.
+									response += "S05";
+								} else if(request.substr(0, strlen("qSupported")) == "qSupported") {
 									response += "PacketSize=512;BreakpointCommands+;swbreak+;hwbreak+;QStartNoAckMode+;vContSupported+;";
 								} else if(request.substr(0, strlen("qAttached")) == "qAttached") {
 									response += "1";
@@ -1096,6 +1146,17 @@ namespace barto_gdbserver {
 										}
 									}
 									
+									// PC-based fallback: find any process whose segList contains current PC
+									if(!TargetProcess) {
+										uaecptr pc = munge24(m68k_getpc());
+										barto_log("GDBSERVER: qOffsets - trying PC-based fallback for PC=0x%x\n", pc);
+										TargetProcess = gdb_find_process_for_pc(pc);
+										if(TargetProcess) {
+											barto_log("GDBSERVER: qOffsets - PC-based fallback found process at 0x%x\n",
+												TargetProcess);
+										}
+									}
+									
 									// Do not use ThisTask when waiting for :a.exe — CON/Workbench breaks relocation
 									if(!TargetProcess) {
 										if(search_name && search_name[0]) {
@@ -1107,7 +1168,6 @@ namespace barto_gdbserver {
 										}
 									}
 									
-									response += "E01";
 									if(TargetProcess) {
 										auto ln_Name = reinterpret_cast<char*>(get_real_address_debug(get_long_debug(TargetProcess + 10)));
 										barto_log("GDBSERVER: qOffsets - selected process: '%s' at 0x%x\n", 
@@ -1169,10 +1229,30 @@ namespace barto_gdbserver {
 												baseText, sizeText);
 											relocate_breakpoints();
 										} else {
-											barto_log("GDBSERVER: qOffsets - ERROR: selected task is not a process (type=%d)\n", ln_Type);
+											barto_log("GDBSERVER: qOffsets - selected task is not a process (type=%d), returning sections\n", ln_Type);
+											if(!sections.empty()) {
+												response = "$";
+												for(size_t i = 0; i < sections.size(); i++) {
+													if(i > 0) response += ";";
+													response += hex32(sections[i]);
+												}
+											} else {
+												response = "$0";
+											}
 										}
 									} else {
-										barto_log("GDBSERVER: qOffsets - ERROR: no process found\n");
+										barto_log("GDBSERVER: qOffsets - no process found, returning sections\n");
+										// Return current sections (may be empty) instead of E01
+										// E01 causes GDB to cache an error state and never re-query
+										if(!sections.empty()) {
+											response = "$";
+											for(size_t i = 0; i < sections.size(); i++) {
+												if(i > 0) response += ";";
+												response += hex32(sections[i]);
+											}
+										} else {
+											response = "$0";
+										}
 									}
 									} // end of else block for process search
 								} else if(request.substr(0, strlen("qRcmd,")) == "qRcmd,") {
@@ -1863,7 +1943,8 @@ namespace barto_gdbserver {
 											debugging = -1;
 											set_special(SPCFLAG_BRK);
 											exception_debugging = 1;
-											barto_log("GDBSERVER: vCont;s - TRACE_SKIP_INS, debugging=%d\n", debugging);
+											step_mode_pending = true;
+											barto_log("GDBSERVER: vCont;s - TRACE_SKIP_INS, debugging=%d SPCFLAG_BRK=%d\n", debugging, (regs.spcflags & SPCFLAG_BRK) ? 1 : 0);
 
 											send_ack(ack);
 											return;
@@ -1903,6 +1984,7 @@ namespace barto_gdbserver {
 												debugging = -1;
 												set_special(SPCFLAG_BRK);
 												exception_debugging = 1;
+												step_mode_pending = true;
 												barto_log("GDBSERVER: vCont;r - TRACE_NRANGE_PC, debugging=%d\n", debugging);
 
 												send_ack(ack);
@@ -2060,11 +2142,29 @@ namespace barto_gdbserver {
 									if(comma != std::string::npos && comma2 != std::string::npos) {
 										uaecptr adr = strtoul(request.data() + strlen("Z2,"), nullptr, 16);
 										int size = strtoul(request.data() + comma2 + 1, nullptr, 16);
-										barto_log("GDBSERVER: write watchpoint at 0x%x, size 0x%x\n", adr, size);
+										
+										// Relocate if baseText known; otherwise store ELF addr for deferred relocation
+										uaecptr loadOffset = (baseText >= ELF_TEXT_BASE) ? (baseText - ELF_TEXT_BASE) : 0;
+										uaecptr relocatedAdr = adr;
+										bool isInElfRange = (adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000);
+										if(loadOffset > 0 && isInElfRange) {
+											relocatedAdr = adr + loadOffset;
+										} else if(baseText > 0 && adr < ELF_TEXT_BASE) {
+											relocatedAdr = adr + baseText;
+										}
+										
+										// Store ELF address for deferred relocation
+										watchpoint_elf_addresses.push_back({adr, size, rwi});
+										
+										barto_log("GDBSERVER: %s at 0x%x -> 0x%x, size 0x%x%s\n",
+											request[1] == '2' ? "write-watchpoint" :
+											request[1] == '3' ? "read-watchpoint" : "access-watchpoint",
+											adr, relocatedAdr, size,
+											(relocatedAdr != adr) ? " (RELOCATED)" : "");
 										for(auto& mwn : mwnodes) {
 											if(mwn.size)
 												continue;
-											mwn.addr = adr;
+											mwn.addr = relocatedAdr;
 											mwn.size = size;
 											mwn.rwi = rwi;
 											// defaults from debug.cpp@memwatch()
@@ -2628,7 +2728,8 @@ start_profile:
 		}
 
 		if(gdb_notify_process_entry && debugger_state == state::debugging) {
-			gdb_notify_process_entry = false;
+			// NOTE: Do NOT clear gdb_notify_process_entry here — the connected block
+			// below uses it to decide whether to stop. We clear it after sending S05.
 			debugger_state = state::connected;
 			const char* search_name = processname ? processname :
 				(saved_processname.empty() ? nullptr : saved_processname.c_str());
@@ -2641,13 +2742,59 @@ start_profile:
 		if(debugger_state == state::connected) {
 //while(!IsDebuggerPresent()) Sleep(100); __debugbreak();
 			auto pc = munge24(m68k_getpc());
-			if(offsets_look_stale()) {
-				const char* search_name = processname ? processname :
-					(saved_processname.empty() ? nullptr : saved_processname.c_str());
-				if(search_name)
-					refresh_process_offsets(search_name, nullptr);
+
+			// AUTO-DETECTION: If offsets are stale and we have unrelocated breakpoints,
+			// try to detect baseText BEFORE the guard check. This is essential when
+			// process entry is never detected (e.g. UAE "min" boot ROM doesn't properly
+			// initialize the Exec task, so TRACE_CHECKONLY in debug.cpp never fires).
+			// Only runs while baseText==0 and PC is in user RAM range, so it's cheap
+			// during boot (PC in ROM → skipped) and stops once baseText is detected.
+			if(offsets_look_stale() && breakpoint_elf_addresses.size() > 0 &&
+				pc >= 0x1000 && pc < 0x1000000) {
+				for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
+					uaecptr elfAddr = breakpoint_elf_addresses[i];
+					if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000 && pc > elfAddr) {
+						uaecptr potential_loadOffset = pc - elfAddr;
+						uaecptr potential_baseText = ELF_TEXT_BASE + potential_loadOffset;
+
+						bool valid_range = (potential_baseText >= 0x1000 && potential_baseText < 0x200000) ||
+						                   (potential_baseText >= 0xC00000 && potential_baseText < 0x1000000);
+
+						if(valid_range) {
+							barto_log("AUTODETECT: PC=0x%x matches ELF BP 0x%x → baseText=0x%x (loadOffset=0x%x)\n",
+								pc, elfAddr, potential_baseText, potential_loadOffset);
+							baseText = potential_baseText;
+							sizeText = 0x100000;
+							relocate_breakpoints();
+							break;
+						}
+					}
+				}
 			}
-			barto_log("GDBSERVER: state::connected PC=0x%x baseText=0x%x\n", pc, baseText);
+
+			// FIX: Don't send spurious S05 when GDB connected before process entry (F5 case).
+			// Without this, every instruction that enters debug() sends S05 to GDB,
+			// creating a tight instruction-by-instruction loop before the program loads.
+			// Don't skip if step is pending (vCont;s, stepi) — GDB expects a stop after each step.
+			// NOTE: trace_mode was already cleared to 0 by debug.cpp line 8105, so check our own flag.
+			if(!gdb_notify_process_entry && !mwhit.size && !step_mode_pending) {
+				bool bp_hit = false;
+				for(const auto& bpn : bpnodes) {
+					if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC && bpn.value1 == pc) {
+						bp_hit = true;
+						break;
+					}
+				}
+				if(!bp_hit) {
+					barto_log("GDBSERVER: state::connected - no stop reason (entry=%d wp=0x%x bp=%d step=%d), returning\n",
+						gdb_notify_process_entry ? 1 : 0, (int)mwhit.addr, bp_hit ? 1 : 0, step_mode_pending ? 1 : 0);
+					return true;
+				}
+			}
+			// Flag consumed: we're proceeding to send a stop notification.
+			gdb_notify_process_entry = false;
+			step_mode_pending = false;
+			barto_log("GDBSERVER: state::connected PC=0x%x baseText=0x%x trace_mode=%d step=%d\n", pc, baseText, trace_mode, step_mode_pending ? 1 : 0);
 			if (pc == KPutCharX) {
 				// if this is too slow, hook uaelib trap#86
 				auto ascii = static_cast<uint8_t>(m68k_dreg(regs, 0));

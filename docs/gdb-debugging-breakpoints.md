@@ -8,6 +8,26 @@
 
 ## Root causes (fixed in WinUAE-DBG)
 
+### 0. Extension/emulator must be deployed as a pair
+
+WinUAE-DBG and the modified `vscode-amiga-debug` adapter share the same
+relocation assumptions (`qOffsets`, deferred process entry, `Z0` relocation).
+Do not update only `winuae-gdb.exe` while leaving an old
+`dist/extension.js` installed in VS Code/Cursor.
+
+Known-good deployment after rebuilding the adapter:
+
+```powershell
+cd C:\Users\David\Documents\Programa\Amiga\vscode-amiga-debug
+npm run compile
+copy dist\extension.js %USERPROFILE%\.cursor\extensions\bartmanabyss.amiga-debug-1.8.2\dist\extension.js
+copy dist\extension.js %USERPROFILE%\.vscode\extensions\bartmanabyss.amiga-debug-1.8.2\dist\extension.js
+```
+
+The adapter should **not** force `set breakpoint always-inserted on`; normal
+GDB insertion on `continue` is enough and avoids inserting source breakpoints
+before the target/process relocation state is stable.
+
 ### 1. Step (`vCont;s`)
 
 `deactivate_debugger()` clears `debugging`. The CPU only calls `debug()` when `debugging != 0` (`newcpu.cpp` → `check_debugger`).  
@@ -45,10 +65,20 @@ or `CFLAGS_OPT=-O0 LTO=0` (see Cursor-Amiga-C `compile (debug)` task).
 ## Checklist
 
 1. Rebuild **WinUAE-DBG** after gdbserver changes.
-2. Rebuild program: `make debug` or launch config **AROS (debug, breakpoints fiables)**.
-3. Start debug session; wait until program is running (GDB `qOffsets` / `debug-ready`).
-4. Set breakpoints, then **Continue** (not only Pause).
-5. Optional log: `monitor breakpoints` in GDB console — verify PC addresses in chip RAM, not `0x400`…
+2. Rebuild and deploy the modified **vscode-amiga-debug** adapter to both
+   Cursor and VS Code if both are installed.
+3. Rebuild program: `make debug` or launch config **AROS (debug, breakpoints fiables)**.
+4. Start debug session; wait until program is running (GDB `qOffsets` / `debug-ready`).
+5. Set breakpoints, then **Continue** (not only Pause).
+6. Optional log: `monitor breakpoints` in GDB console — verify PC addresses in chip RAM, not `0x400`…
+7. Full local smoke test:
+
+```powershell
+cd C:\Users\David\Documents\Programa\Amiga\mcp-winuae-emu
+node scripts\test-amiga-c-mi-source-debug.mjs
+$env:AMIGA_DEBUG_EXT="$env:USERPROFILE\.vscode\extensions\bartmanabyss.amiga-debug-1.8.2"
+node scripts\test-amiga-c-mi-source-debug.mjs
+```
 
 ## Related
 
