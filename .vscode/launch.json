@@ -8,8 +8,8 @@
       "args": [],
       "stopAtEntry": false,
       "externalConsole": true,
-      "cwd": "${workspaceFolder}",
-      "program": "${workspaceFolder}/build/Debug/outDebug",
+      "cwd": "c:/Users/David/Documents/Programa/Amiga/WinUAE-DBG",
+      "program": "c:/Users/David/Documents/Programa/Amiga/WinUAE-DBG/build/Debug/outDebug",
       "MIMode": "gdb",
       "miDebuggerPath": "gdb",
       "setupCommands": [

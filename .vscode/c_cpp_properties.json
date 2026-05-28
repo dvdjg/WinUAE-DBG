@@ -2,7 +2,7 @@
   "version": 4,
   "configurations": [
     {
-      "name": "WinUAE-DBG (MSVC / IntelliSense)",
+      "name": "windows-gcc-x64",
       "includePath": [
         "${workspaceFolder}/**"
       ],
@@ -12,10 +12,10 @@
         "_UNICODE"
       ],
       "windowsSdkVersion": "${default}",
-      "compilerPath": "",
+      "compilerPath": "C:/msys64/ucrt64/bin/gcc.exe",
       "cStandard": "${default}",
       "cppStandard": "${default}",
-      "intelliSenseMode": "windows-msvc-x64",
+      "intelliSenseMode": "windows-gcc-x64",
       "compilerArgs": []
     }
   ]
