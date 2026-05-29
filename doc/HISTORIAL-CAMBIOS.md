@@ -313,4 +313,26 @@ this.miDebugger.once('sections-loaded', (sections: Section[], loadOffset?: numbe
 
 ---
 
-*Actualizado: 2026-02-22; atribución Bartman vs fork local: 2026-05-14*
+## 2026-05-29 - Canal lateral AMG para telemetria
+
+Se ha añadido un primer canal lateral TCP local en `od-win32/barto_gdbserver.cpp`.
+
+- Escucha en `127.0.0.1:2346`.
+- El puerto se puede cambiar con `WINUAE_SIDE_CHANNEL_PORT`.
+- No comparte el socket GDB principal, por lo que no compite con Cursor/VS Code.
+- Responde JSON por linea a comandos de observacion: `hello`, `state`, `regs`,
+  `mem <addr> <len>` y `runstatus <addr>`.
+- `state` expone tambien `sections`, porque los simbolos de las demos pueden vivir
+  en hunks distintos (`.text`, `.rodata`, `.data`, `.bss`).
+
+Este MVP se usa desde `Amiga-C/tools/run/run-demo.mjs` para esperar
+`g_amg_run_status` mientras el 68000 sigue ejecutando. La regresion de `Amiga-C`
+`out/regression/20260529-120303/regression-report.md` valida que las demos `000`,
+`010`, `020` y `030` alcanzan `side-channel READY` antes de la captura.
+
+Pendiente: modos `observe/assist/takeover`, debug lock, auditoria de escrituras y
+comandos laterales seguros para screenshot/profiler/input.
+
+---
+
+*Actualizado: 2026-02-22; atribución Bartman vs fork local: 2026-05-14; canal lateral AMG: 2026-05-29*

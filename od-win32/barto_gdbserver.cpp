@@ -5,6 +5,9 @@
 #include <thread>
 #include <vector>
 #include <array>
+#include <atomic>
+#include <mutex>
+#include <sstream>
 
 #include "options.h"
 #include "memory.h"
@@ -151,6 +154,35 @@ namespace barto_gdbserver {
 
 	void barto_log(const char* format, ...);
 	void barto_log(const wchar_t* format, ...);
+
+	// AMG SIDE CHANNEL:
+	// The GDB RSP socket is intentionally single-owner: VS Code/Cursor must be
+	// able to keep using it for ordinary debugging without an AI/test runner
+	// stealing packets or forcing asynchronous stops.  This small localhost-only
+	// service is a separate observation/control lane.  The first MVP is read-only
+	// and line based so that automated tests can prove a demo reached READY while
+	// the 68000 keeps running.
+	//
+	// Protocol, one command per line:
+	//   hello
+	//   state
+	//   regs
+	//   mem <hex-address> <hex-or-decimal-length>
+	//   runstatus <hex-address>
+	//
+	// Every reply is a single JSON line.  Keeping this beside the GDB server for
+	// now lets the channel reuse the same low-level memory/register helpers.  Once
+	// it grows, it can move to its own translation unit without changing clients.
+	static std::thread side_channel_thread;
+	static std::atomic<bool> side_channel_stop{ false };
+	static std::atomic<bool> side_channel_running{ false };
+	static SOCKET side_channel_socket{ INVALID_SOCKET };
+	static SOCKET side_channel_client{ INVALID_SOCKET };
+	static std::mutex side_channel_socket_mutex;
+	static int side_channel_port = 2346;
+
+	static void side_channel_start();
+	static void side_channel_close();
 
 	// Log file for debugging (writable via monitor logfile command)
 	static FILE* log_file = nullptr;
@@ -884,6 +916,8 @@ namespace barto_gdbserver {
 				listen();
 			else
 				barto_log("GDBSERVER: reusing existing listen socket after disconnect\n");
+
+			side_channel_start();
 		}
 
 		return true;
@@ -891,6 +925,7 @@ namespace barto_gdbserver {
 
 	void close() {
 		barto_log(_T("GDBSERVER: close()\n"));
+		side_channel_close();
 		if(gdbconn != INVALID_SOCKET)
 			closesocket(gdbconn);
 		gdbconn = INVALID_SOCKET;
@@ -953,6 +988,279 @@ namespace barto_gdbserver {
 		for(int reg = 0; reg < 18; reg++)
 			ret += get_register(reg);
 		return ret;
+	}
+
+	static bool side_channel_send_line(SOCKET s, const std::string& line) {
+		std::string out = line;
+		out += "\n";
+		const char* p = out.data();
+		int remaining = (int)out.size();
+		while(remaining > 0) {
+			int n = send(s, p, remaining, 0);
+			if(n == SOCKET_ERROR || n <= 0)
+				return false;
+			p += n;
+			remaining -= n;
+		}
+		return true;
+	}
+
+	static bool side_channel_parse_u32(const std::string& text, uae_u32& out) {
+		char* end = nullptr;
+		const char* s = text.c_str();
+		int base = 10;
+		if(text.size() > 2 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+			s += 2;
+			base = 16;
+		} else {
+			for(char c : text) {
+				if((c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+					base = 16;
+					break;
+				}
+			}
+		}
+		unsigned long v = strtoul(s, &end, base);
+		if(end == s || *end != '\0')
+			return false;
+		out = (uae_u32)v;
+		return true;
+	}
+
+	static std::string side_channel_hex_memory(uaecptr address, int length) {
+		std::string hexdata;
+		hexdata.reserve((size_t)length * 2);
+		for(int i = 0; i < length; i++) {
+			uae_u8 value = 0;
+			if(!gdb_try_read_byte(address + i, value))
+				return std::string();
+			hexdata += hex8(value);
+		}
+		return hexdata;
+	}
+
+	static std::string side_channel_regs_json() {
+		std::ostringstream out;
+		out << "{\"ok\":true"
+			<< ",\"d0\":\"0x" << hex32(m68k_dreg(regs, 0)) << "\""
+			<< ",\"d1\":\"0x" << hex32(m68k_dreg(regs, 1)) << "\""
+			<< ",\"d2\":\"0x" << hex32(m68k_dreg(regs, 2)) << "\""
+			<< ",\"d3\":\"0x" << hex32(m68k_dreg(regs, 3)) << "\""
+			<< ",\"d4\":\"0x" << hex32(m68k_dreg(regs, 4)) << "\""
+			<< ",\"d5\":\"0x" << hex32(m68k_dreg(regs, 5)) << "\""
+			<< ",\"d6\":\"0x" << hex32(m68k_dreg(regs, 6)) << "\""
+			<< ",\"d7\":\"0x" << hex32(m68k_dreg(regs, 7)) << "\""
+			<< ",\"a0\":\"0x" << hex32(m68k_areg(regs, 0)) << "\""
+			<< ",\"a1\":\"0x" << hex32(m68k_areg(regs, 1)) << "\""
+			<< ",\"a2\":\"0x" << hex32(m68k_areg(regs, 2)) << "\""
+			<< ",\"a3\":\"0x" << hex32(m68k_areg(regs, 3)) << "\""
+			<< ",\"a4\":\"0x" << hex32(m68k_areg(regs, 4)) << "\""
+			<< ",\"a5\":\"0x" << hex32(m68k_areg(regs, 5)) << "\""
+			<< ",\"a6\":\"0x" << hex32(m68k_areg(regs, 6)) << "\""
+			<< ",\"a7\":\"0x" << hex32(m68k_areg(regs, 7)) << "\""
+			<< ",\"sr\":\"0x" << hex32(regs.sr) << "\""
+			<< ",\"pc\":\"0x" << hex32(M68K_GETPC) << "\""
+			<< "}";
+		return out.str();
+	}
+
+	static std::string side_channel_handle_command(const std::string& line) {
+		std::istringstream in(line);
+		std::string cmd;
+		in >> cmd;
+		if(cmd.empty())
+			return "{\"ok\":false,\"error\":\"empty_command\"}";
+		if(cmd == "hello")
+			return "{\"ok\":true,\"service\":\"winuae-amg-side-channel\",\"version\":1}";
+		if(cmd == "state") {
+			std::ostringstream out;
+			out << "{\"ok\":true"
+				<< ",\"gdbConnected\":" << (gdbconn != INVALID_SOCKET ? "true" : "false")
+				<< ",\"debuggerState\":" << (int)debugger_state
+				<< ",\"baseText\":\"0x" << hex32(baseText) << "\""
+				<< ",\"sizeText\":\"0x" << hex32(sizeText) << "\""
+				<< ",\"sections\":[";
+			for(size_t i = 0; i < sections.size(); i++) {
+				if(i > 0)
+					out << ",";
+				out << "\"0x" << hex32(sections[i]) << "\"";
+			}
+			out << "]"
+				<< ",\"pc\":\"0x" << hex32(M68K_GETPC) << "\""
+				<< ",\"sr\":\"0x" << hex32(regs.sr) << "\""
+				<< ",\"cycles\":" << (unsigned long long)get_cycles()
+				<< "}";
+			return out.str();
+		}
+		if(cmd == "regs")
+			return side_channel_regs_json();
+		if(cmd == "mem") {
+			std::string addr_text, len_text;
+			in >> addr_text >> len_text;
+			uae_u32 addr = 0, len = 0;
+			if(!side_channel_parse_u32(addr_text, addr) || !side_channel_parse_u32(len_text, len))
+				return "{\"ok\":false,\"error\":\"bad_arguments\"}";
+			if(len > 4096)
+				return "{\"ok\":false,\"error\":\"length_too_large\",\"max\":4096}";
+			std::string data = side_channel_hex_memory(addr, (int)len);
+			if(data.size() != (size_t)len * 2)
+				return "{\"ok\":false,\"error\":\"memory_not_readable\"}";
+			std::ostringstream out;
+			out << "{\"ok\":true,\"address\":\"0x" << hex32(addr) << "\",\"length\":" << len << ",\"data\":\"" << data << "\"}";
+			return out.str();
+		}
+		if(cmd == "runstatus") {
+			std::string addr_text;
+			in >> addr_text;
+			uae_u32 addr = 0;
+			if(!side_channel_parse_u32(addr_text, addr))
+				return "{\"ok\":false,\"error\":\"bad_arguments\"}";
+			std::string data = side_channel_hex_memory(addr, 16);
+			if(data.size() != 32)
+				return "{\"ok\":false,\"error\":\"memory_not_readable\"}";
+			uae_u32 magic = strtoul(data.substr(0, 8).c_str(), nullptr, 16);
+			uae_u32 version = strtoul(data.substr(8, 4).c_str(), nullptr, 16);
+			uae_u32 state = strtoul(data.substr(12, 4).c_str(), nullptr, 16);
+			uae_u32 frame = strtoul(data.substr(16, 8).c_str(), nullptr, 16);
+			uae_u32 detail = strtoul(data.substr(24, 8).c_str(), nullptr, 16);
+			std::ostringstream out;
+			out << "{\"ok\":true,\"address\":\"0x" << hex32(addr)
+				<< "\",\"magic\":\"0x" << hex32(magic)
+				<< "\",\"version\":" << version
+				<< ",\"state\":" << state
+				<< ",\"frame\":" << frame
+				<< ",\"detail\":" << detail
+				<< "}";
+			return out.str();
+		}
+		return "{\"ok\":false,\"error\":\"unknown_command\"}";
+	}
+
+	static void side_channel_client_loop(SOCKET client) {
+		std::string pending;
+		char buffer[512];
+		side_channel_send_line(client, "{\"ok\":true,\"event\":\"connected\",\"service\":\"winuae-amg-side-channel\",\"version\":1}");
+		while(!side_channel_stop.load()) {
+			int n = recv(client, buffer, sizeof(buffer), 0);
+			if(n == 0)
+				break;
+			if(n == SOCKET_ERROR) {
+				int err = WSAGetLastError();
+				if(err == WSAEWOULDBLOCK) {
+					Sleep(10);
+					continue;
+				}
+				break;
+			}
+			pending.append(buffer, buffer + n);
+			for(;;) {
+				size_t eol = pending.find('\n');
+				if(eol == std::string::npos)
+					break;
+				std::string command = pending.substr(0, eol);
+				if(!command.empty() && command.back() == '\r')
+					command.pop_back();
+				pending.erase(0, eol + 1);
+				if(!side_channel_send_line(client, side_channel_handle_command(command)))
+					return;
+			}
+		}
+	}
+
+	static void side_channel_main() {
+		side_channel_running.store(true);
+		SOCKET listen_socket = INVALID_SOCKET;
+		PADDRINFOW info = nullptr;
+		do {
+			constexpr auto name = _T("127.0.0.1");
+			TCHAR port_text[16];
+			_stprintf(port_text, _T("%d"), side_channel_port);
+			if(GetAddrInfoW(name, port_text, nullptr, &info) != 0)
+				break;
+			listen_socket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+			if(listen_socket == INVALID_SOCKET)
+				break;
+			const int one = 1;
+			setsockopt(listen_socket, SOL_SOCKET, SO_REUSEADDR, (char*)&one, sizeof one);
+			if(::bind(listen_socket, info->ai_addr, (int)info->ai_addrlen) < 0)
+				break;
+			if(::listen(listen_socket, 1) < 0)
+				break;
+			u_long nonblock = 1;
+			ioctlsocket(listen_socket, FIONBIO, &nonblock);
+			{
+				std::lock_guard<std::mutex> lock(side_channel_socket_mutex);
+				side_channel_socket = listen_socket;
+			}
+			barto_log("SIDECHANNEL: listening on 127.0.0.1:%d\n", side_channel_port);
+			while(!side_channel_stop.load()) {
+				sockaddr_storage addr{};
+				int len = sizeof(addr);
+				SOCKET client = accept(listen_socket, (sockaddr*)&addr, &len);
+				if(client == INVALID_SOCKET) {
+					int err = WSAGetLastError();
+					if(err == WSAEWOULDBLOCK) {
+						Sleep(25);
+						continue;
+					}
+					break;
+				}
+				u_long client_nonblock = 1;
+				ioctlsocket(client, FIONBIO, &client_nonblock);
+				{
+					std::lock_guard<std::mutex> lock(side_channel_socket_mutex);
+					side_channel_client = client;
+				}
+				side_channel_client_loop(client);
+				{
+					std::lock_guard<std::mutex> lock(side_channel_socket_mutex);
+					if(side_channel_client == client)
+						side_channel_client = INVALID_SOCKET;
+				}
+				closesocket(client);
+			}
+		} while(false);
+		if(info)
+			FreeAddrInfoW(info);
+		if(listen_socket != INVALID_SOCKET) {
+			closesocket(listen_socket);
+			std::lock_guard<std::mutex> lock(side_channel_socket_mutex);
+			if(side_channel_socket == listen_socket)
+				side_channel_socket = INVALID_SOCKET;
+		}
+		side_channel_running.store(false);
+		barto_log("SIDECHANNEL: stopped\n");
+	}
+
+	static void side_channel_start() {
+		if(side_channel_thread.joinable())
+			return;
+		const char* port_env = getenv("WINUAE_SIDE_CHANNEL_PORT");
+		if(port_env && port_env[0]) {
+			int p = atoi(port_env);
+			if(p > 0 && p < 65536)
+				side_channel_port = p;
+		}
+		side_channel_stop.store(false);
+		side_channel_thread = std::thread(side_channel_main);
+	}
+
+	static void side_channel_close() {
+		side_channel_stop.store(true);
+		{
+			std::lock_guard<std::mutex> lock(side_channel_socket_mutex);
+			if(side_channel_client != INVALID_SOCKET)
+				shutdown(side_channel_client, SD_BOTH);
+			if(side_channel_socket != INVALID_SOCKET)
+				shutdown(side_channel_socket, SD_BOTH);
+		}
+		if(side_channel_thread.joinable())
+			side_channel_thread.join();
+		{
+			std::lock_guard<std::mutex> lock(side_channel_socket_mutex);
+			side_channel_client = INVALID_SOCKET;
+			side_channel_socket = INVALID_SOCKET;
+		}
 	}
 
 	// MCP-WINUAE-EMU EXTENSION: Write individual register
