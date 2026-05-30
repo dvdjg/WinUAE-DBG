@@ -365,6 +365,17 @@ La prueba lanza `030_ehb_palette_zones`, mantiene GDB conectado, toma el lock
 `assist`, inyecta raton emulado, escribe una captura PNG lateral y genera un perfil
 de 1 frame.
 
+Tambien se ha validado la convivencia con depuracion normal:
+
+```powershell
+.\tools\debug\verify-gdb-step-side-channel.ps1 -Steps 3
+```
+
+Esta prueba pone un breakpoint GDB en `amg_debug_ready_probe`, continua hasta
+`T05swbreak`, hace step instruction varias veces y consulta el canal lateral
+durante la ejecucion y en cada parada, verificando que PC/GDB y PC lateral
+coinciden.
+
 Pendiente: auditoria de escrituras, snapshots/rollback, pausa/reanudar por lock y
 zona scratch para diagnostico 68k.
 
