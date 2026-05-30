@@ -8,6 +8,8 @@
 #include <atomic>
 #include <mutex>
 #include <sstream>
+#include <deque>
+#include <algorithm>
 
 #include "options.h"
 #include "memory.h"
@@ -180,6 +182,34 @@ namespace barto_gdbserver {
 	static SOCKET side_channel_client{ INVALID_SOCKET };
 	static std::mutex side_channel_socket_mutex;
 	static int side_channel_port = 2346;
+	enum class side_channel_mode {
+		observe,
+		assist,
+		takeover,
+	};
+	static std::mutex side_channel_lock_mutex;
+	static bool side_channel_debug_lock = false;
+	static side_channel_mode side_channel_debug_mode = side_channel_mode::observe;
+	static std::string side_channel_lock_owner;
+	static bool profile_started_by_side_channel = false;
+	static bool side_channel_profile_active = false;
+	static std::string side_channel_profile_outname;
+	static std::string side_channel_profile_result;
+	enum class side_channel_action_type {
+		screenshot,
+		input,
+		profile,
+	};
+	struct side_channel_action {
+		unsigned id{};
+		side_channel_action_type type{};
+		std::vector<std::string> tokens;
+		std::string result;
+		bool done{};
+	};
+	static std::mutex side_channel_action_mutex;
+	static std::deque<side_channel_action> side_channel_actions;
+	static unsigned side_channel_next_action_id = 1;
 
 	static void side_channel_start();
 	static void side_channel_close();
@@ -1039,6 +1069,290 @@ namespace barto_gdbserver {
 		return hexdata;
 	}
 
+	static std::string side_channel_json_escape(const std::string& text) {
+		std::string out;
+		out.reserve(text.size() + 8);
+		for(char c : text) {
+			switch(c) {
+			case '\\': out += "\\\\"; break;
+			case '"': out += "\\\""; break;
+			case '\n': out += "\\n"; break;
+			case '\r': out += "\\r"; break;
+			case '\t': out += "\\t"; break;
+			default:
+				if((unsigned char)c < 0x20) {
+					char tmp[8];
+					snprintf(tmp, sizeof(tmp), "\\u%04x", (unsigned char)c);
+					out += tmp;
+				} else {
+					out += c;
+				}
+			}
+		}
+		return out;
+	}
+
+	static const char* side_channel_mode_name(side_channel_mode mode) {
+		switch(mode) {
+		case side_channel_mode::observe: return "observe";
+		case side_channel_mode::assist: return "assist";
+		case side_channel_mode::takeover: return "takeover";
+		}
+		return "observe";
+	}
+
+	static bool side_channel_parse_mode(const std::string& text, side_channel_mode& mode) {
+		if(text == "observe") {
+			mode = side_channel_mode::observe;
+			return true;
+		}
+		if(text == "assist") {
+			mode = side_channel_mode::assist;
+			return true;
+		}
+		if(text == "takeover") {
+			mode = side_channel_mode::takeover;
+			return true;
+		}
+		return false;
+	}
+
+	static bool side_channel_has_assist_lock() {
+		std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
+		return side_channel_debug_lock && side_channel_debug_mode != side_channel_mode::observe;
+	}
+
+	static std::string side_channel_lock_status_json() {
+		std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
+		std::ostringstream out;
+		out << "{\"ok\":true,\"locked\":" << (side_channel_debug_lock ? "true" : "false")
+			<< ",\"mode\":\"" << side_channel_mode_name(side_channel_debug_mode) << "\""
+			<< ",\"owner\":\"" << side_channel_json_escape(side_channel_lock_owner) << "\"}";
+		return out.str();
+	}
+
+	static std::vector<std::string> side_channel_tokenize(const std::string& line) {
+		std::vector<std::string> tokens;
+		std::string current;
+		bool quoted = false;
+		for(size_t i = 0; i < line.size(); i++) {
+			char c = line[i];
+			if(quoted) {
+				if(c == '"' ) {
+					quoted = false;
+				} else if(c == '\\' && i + 1 < line.size()) {
+					// Keep normal Windows paths intact. Only consume the
+					// backslash as an escape for quote/backslash; otherwise it
+					// is a literal path separator that must survive tokenizing.
+					char next = line[i + 1];
+					if(next == '"' || next == '\\') {
+						current += next;
+						i++;
+					} else {
+						current += c;
+					}
+				} else {
+					current += c;
+				}
+				continue;
+			}
+			if(c == '"') {
+				quoted = true;
+				continue;
+			}
+			if(c == ' ' || c == '\t') {
+				if(!current.empty()) {
+					tokens.push_back(current);
+					current.clear();
+				}
+				continue;
+			}
+			current += c;
+		}
+		if(!current.empty())
+			tokens.push_back(current);
+		return tokens;
+	}
+
+	static std::string side_channel_capture_screenshot(const std::string& filepath) {
+		if(filepath.empty())
+			return "{\"ok\":false,\"error\":\"missing_path\"}";
+		vsync_display_render();
+		int monid = getfocusedmonitor();
+		vidbuf_description* avidinfo = &adisplays[monid].gfxvidinfo;
+		vidbuffer* vb = &avidinfo->drawbuffer;
+		if(screenshot_prepare(monid, vb) != 1)
+			return "{\"ok\":false,\"error\":\"screenshot_prepare_failed\"}";
+		auto sbi = screenshot_get_bi();
+		auto sbi_bits = (const uint8_t*)screenshot_get_bits();
+		if(!sbi || !sbi_bits)
+			return "{\"ok\":false,\"error\":\"missing_framebuffer\"}";
+		if(sbi->bmiHeader.biBitCount != 24 && sbi->bmiHeader.biBitCount != 32) {
+			std::ostringstream err;
+			err << "{\"ok\":false,\"error\":\"unsupported_bpp\",\"bpp\":" << sbi->bmiHeader.biBitCount << "}";
+			return err.str();
+		}
+		const auto w = sbi->bmiHeader.biWidth;
+		const auto h = sbi->bmiHeader.biHeight;
+		const int bytes_per_pixel = sbi->bmiHeader.biBitCount / 8;
+		const auto pitch = sbi->bmiHeader.biSizeImage / sbi->bmiHeader.biHeight;
+		auto bits = std::make_unique<uint8_t[]>(w * 3 * h);
+		for(int y = 0; y < h; y++) {
+			for(int x = 0; x < w; x++) {
+				const int src = (h - 1 - y) * pitch + x * bytes_per_pixel;
+				bits[y * w * 3 + x * 3 + 0] = sbi_bits[src + 2];
+				bits[y * w * 3 + x * 3 + 1] = sbi_bits[src + 1];
+				bits[y * w * 3 + x * 3 + 2] = sbi_bits[src + 0];
+			}
+		}
+		if(!stbi_write_png(filepath.c_str(), w, h, 3, bits.get(), w * 3))
+			return "{\"ok\":false,\"error\":\"write_failed\"}";
+		std::ostringstream out;
+		out << "{\"ok\":true,\"width\":" << w << ",\"height\":" << h
+			<< ",\"path\":\"" << side_channel_json_escape(filepath) << "\"}";
+		return out.str();
+	}
+
+	static std::string side_channel_apply_input_now(const std::vector<std::string>& tokens) {
+		if(tokens.size() < 2)
+			return "{\"ok\":false,\"error\":\"bad_arguments\"}";
+		if(tokens[1] == "mouse") {
+			if(tokens.size() >= 5 && tokens[2] == "abs") {
+				int x = atoi(tokens[3].c_str());
+				int y = atoi(tokens[4].c_str());
+				setmousestate(0, 0, x, 1);
+				setmousestate(0, 1, y, 1);
+				return "{\"ok\":true,\"input\":\"mouse_abs\"}";
+			}
+			if(tokens.size() >= 5 && tokens[2] == "move") {
+				int dx = atoi(tokens[3].c_str());
+				int dy = atoi(tokens[4].c_str());
+				setmousestate(0, 0, dx, 0);
+				setmousestate(0, 1, dy, 0);
+				return "{\"ok\":true,\"input\":\"mouse_move\"}";
+			}
+			if(tokens.size() >= 5 && tokens[2] == "button") {
+				int btn = atoi(tokens[3].c_str());
+				int state = atoi(tokens[4].c_str());
+				if(btn < 0 || btn > 2)
+					return "{\"ok\":false,\"error\":\"bad_button\"}";
+				setmousebuttonstate(0, btn, state);
+				return "{\"ok\":true,\"input\":\"mouse_button\"}";
+			}
+		}
+		if(tokens[1] == "key" && tokens.size() >= 4) {
+			int scancode = strtol(tokens[2].c_str(), nullptr, 0);
+			int state = atoi(tokens[3].c_str());
+			send_input_event(256 + (scancode & 0x7f), state, 1, 0);
+			return "{\"ok\":true,\"input\":\"key\"}";
+		}
+		return "{\"ok\":false,\"error\":\"unsupported_input\"}";
+	}
+
+	static std::string side_channel_start_profile_now(const std::vector<std::string>& tokens) {
+		if(tokens.size() < 3)
+			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"profile <frames> <out-file> [unwind-file]\"}";
+		if(debugger_state == state::profile || debugger_state == state::profiling || side_channel_profile_active)
+			return "{\"ok\":false,\"error\":\"profile_already_active\"}";
+		profile_num_frames = max(1, min(100, atoi(tokens[1].c_str())));
+		profile_outname = tokens[2];
+		std::string unwind_name = tokens.size() >= 4 ? tokens[3] : std::string();
+		profile_unwind.reset();
+		profile_unwind_count = 0;
+		if(!unwind_name.empty()) {
+			if(auto f = fopen(unwind_name.c_str(), "rb")) {
+				if(fseek(f, 0, SEEK_END) == 0) {
+					long fsz_long = ftell(f);
+					if(fsz_long > 0) {
+						const size_t fsz = (size_t)fsz_long;
+						const size_t esz = sizeof(cpu_profiler_unwind);
+						const size_t nel = fsz / esz;
+						if(nel > 0) {
+							rewind(f);
+							profile_unwind = std::make_unique<cpu_profiler_unwind[]>(nel);
+							profile_unwind_count = fread(profile_unwind.get(), esz, nel, f);
+						}
+					}
+				}
+				fclose(f);
+			}
+		}
+		profile_frame_count = 0;
+		profile_started_by_side_channel = true;
+		side_channel_profile_active = true;
+		side_channel_profile_outname = profile_outname;
+		side_channel_profile_result = "running";
+		debugger_state = state::profile;
+		deactivate_debugger();
+		std::ostringstream out;
+		out << "{\"ok\":true,\"status\":\"accepted\",\"frames\":" << profile_num_frames
+			<< ",\"path\":\"" << side_channel_json_escape(profile_outname) << "\"}";
+		return out.str();
+	}
+
+	static std::string side_channel_enqueue_action(side_channel_action_type type, const std::vector<std::string>& tokens) {
+		std::lock_guard<std::mutex> lock(side_channel_action_mutex);
+		side_channel_action action;
+		action.id = side_channel_next_action_id++;
+		action.type = type;
+		action.tokens = tokens;
+		side_channel_actions.push_back(action);
+		std::ostringstream out;
+		out << "{\"ok\":true,\"status\":\"queued\",\"id\":" << action.id << "}";
+		return out.str();
+	}
+
+	static std::string side_channel_action_status_json(unsigned id) {
+		std::lock_guard<std::mutex> lock(side_channel_action_mutex);
+		for(const auto& action : side_channel_actions) {
+			if(action.id == id) {
+				std::ostringstream out;
+				out << "{\"ok\":true,\"id\":" << id
+					<< ",\"done\":" << (action.done ? "true" : "false")
+					<< ",\"result\":" << (action.result.empty() ? "null" : action.result)
+					<< "}";
+				return out.str();
+			}
+		}
+		return "{\"ok\":false,\"error\":\"unknown_action\"}";
+	}
+
+	static void side_channel_process_actions() {
+		for(;;) {
+			side_channel_action action;
+			{
+				std::lock_guard<std::mutex> lock(side_channel_action_mutex);
+				auto it = std::find_if(side_channel_actions.begin(), side_channel_actions.end(), [](const side_channel_action& a) {
+					return !a.done && a.result.empty();
+				});
+				if(it == side_channel_actions.end())
+					return;
+				action = *it;
+				it->result = "{\"ok\":true,\"status\":\"running\"}";
+			}
+
+			std::string result;
+			if(action.type == side_channel_action_type::screenshot) {
+				result = action.tokens.size() >= 2 ? side_channel_capture_screenshot(action.tokens[1]) : "{\"ok\":false,\"error\":\"missing_path\"}";
+			} else if(action.type == side_channel_action_type::input) {
+				result = side_channel_apply_input_now(action.tokens);
+			} else if(action.type == side_channel_action_type::profile) {
+				result = side_channel_start_profile_now(action.tokens);
+			}
+
+			std::lock_guard<std::mutex> lock(side_channel_action_mutex);
+			for(auto& queued : side_channel_actions) {
+				if(queued.id == action.id) {
+					queued.result = result;
+					queued.done = true;
+					break;
+				}
+			}
+			while(side_channel_actions.size() > 64 && side_channel_actions.front().done)
+				side_channel_actions.pop_front();
+		}
+	}
+
 	static std::string side_channel_regs_json() {
 		std::ostringstream out;
 		out << "{\"ok\":true"
@@ -1072,11 +1386,56 @@ namespace barto_gdbserver {
 			return "{\"ok\":false,\"error\":\"empty_command\"}";
 		if(cmd == "hello")
 			return "{\"ok\":true,\"service\":\"winuae-amg-side-channel\",\"version\":1}";
+		if(cmd == "mode")
+			return side_channel_lock_status_json();
+		if(cmd == "lock") {
+			std::string action;
+			in >> action;
+			if(action == "status" || action.empty())
+				return side_channel_lock_status_json();
+			if(action == "acquire") {
+				std::string owner, mode_text;
+				in >> owner >> mode_text;
+				if(owner.empty())
+					owner = "anonymous";
+				side_channel_mode requested = side_channel_mode::assist;
+				if(!mode_text.empty() && !side_channel_parse_mode(mode_text, requested))
+					return "{\"ok\":false,\"error\":\"bad_mode\"}";
+				std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
+				if(side_channel_debug_lock)
+					return "{\"ok\":false,\"error\":\"locked\"}";
+				side_channel_debug_lock = true;
+				side_channel_debug_mode = requested;
+				side_channel_lock_owner = owner;
+				std::ostringstream out;
+				out << "{\"ok\":true,\"locked\":true,\"mode\":\"" << side_channel_mode_name(side_channel_debug_mode)
+					<< "\",\"owner\":\"" << side_channel_json_escape(side_channel_lock_owner) << "\"}";
+				return out.str();
+			}
+			if(action == "release") {
+				std::string owner;
+				in >> owner;
+				std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
+				if(!side_channel_debug_lock)
+					return "{\"ok\":true,\"locked\":false}";
+				if(!owner.empty() && owner != side_channel_lock_owner)
+					return "{\"ok\":false,\"error\":\"owner_mismatch\"}";
+				side_channel_debug_lock = false;
+				side_channel_debug_mode = side_channel_mode::observe;
+				side_channel_lock_owner.clear();
+				return "{\"ok\":true,\"locked\":false,\"mode\":\"observe\"}";
+			}
+			return "{\"ok\":false,\"error\":\"bad_lock_action\"}";
+		}
 		if(cmd == "state") {
 			std::ostringstream out;
+			std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
 			out << "{\"ok\":true"
 				<< ",\"gdbConnected\":" << (gdbconn != INVALID_SOCKET ? "true" : "false")
 				<< ",\"debuggerState\":" << (int)debugger_state
+				<< ",\"sideMode\":\"" << side_channel_mode_name(side_channel_debug_mode) << "\""
+				<< ",\"sideLocked\":" << (side_channel_debug_lock ? "true" : "false")
+				<< ",\"sideOwner\":\"" << side_channel_json_escape(side_channel_lock_owner) << "\""
 				<< ",\"baseText\":\"0x" << hex32(baseText) << "\""
 				<< ",\"sizeText\":\"0x" << hex32(sizeText) << "\""
 				<< ",\"sections\":[";
@@ -1094,6 +1453,45 @@ namespace barto_gdbserver {
 		}
 		if(cmd == "regs")
 			return side_channel_regs_json();
+		if(cmd == "screenshot") {
+			std::vector<std::string> tokens = side_channel_tokenize(line);
+			if(tokens.size() < 2)
+				return "{\"ok\":false,\"error\":\"missing_path\"}";
+			return side_channel_enqueue_action(side_channel_action_type::screenshot, tokens);
+		}
+		if(cmd == "input") {
+			if(!side_channel_has_assist_lock())
+				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"assist\"}";
+			return side_channel_enqueue_action(side_channel_action_type::input, side_channel_tokenize(line));
+		}
+		if(cmd == "profile") {
+			if(!side_channel_has_assist_lock())
+				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"assist\"}";
+			return side_channel_enqueue_action(side_channel_action_type::profile, side_channel_tokenize(line));
+		}
+		if(cmd == "action") {
+			std::string action;
+			in >> action;
+			if(action == "status") {
+				std::string id_text;
+				in >> id_text;
+				uae_u32 id = 0;
+				if(!side_channel_parse_u32(id_text, id))
+					return "{\"ok\":false,\"error\":\"bad_action_id\"}";
+				return side_channel_action_status_json(id);
+			}
+			return "{\"ok\":false,\"error\":\"bad_action_command\"}";
+		}
+		if(cmd == "profile-status") {
+			std::ostringstream out;
+			out << "{\"ok\":true,\"active\":" << (side_channel_profile_active ? "true" : "false")
+				<< ",\"status\":\"" << side_channel_json_escape(side_channel_profile_result) << "\""
+				<< ",\"path\":\"" << side_channel_json_escape(side_channel_profile_outname) << "\""
+				<< ",\"frame\":" << profile_frame_count
+				<< ",\"frames\":" << profile_num_frames
+				<< "}";
+			return out.str();
+		}
 		if(cmd == "mem") {
 			std::string addr_text, len_text;
 			in >> addr_text >> len_text;
@@ -2628,6 +3026,8 @@ namespace barto_gdbserver {
 		if(!(currprefs.debugging_features & (1 << 2))) // "gdbserver"
 			return;
 
+		side_channel_process_actions();
+
 		// MCP-WINUAE-EMU EXTENSION: Auto-activate debugger when GDB client connects
 		// This allows games loaded from ADF to be debugged without a debugging_trigger.
 		// When debugging_trigger is set (:a.exe), stay in state::inited so debug()'s
@@ -2661,7 +3061,13 @@ start_profile:
 			if(profile_frame_count == 0) {
 				profile_outfile = fopen(profile_outname.c_str(), "wb");
 				if(!profile_outfile) {
-					send_response("$E01");
+					if(profile_started_by_side_channel) {
+						side_channel_profile_active = false;
+						side_channel_profile_result = "open_failed";
+						profile_started_by_side_channel = false;
+					} else {
+						send_response("$E01");
+					}
 					debugger_state = state::debugging;
 					activate_debugger();
 					return;
@@ -2862,7 +3268,13 @@ start_profile:
 
 			if(profile_frame_count == profile_num_frames) {
 				fclose(profile_outfile);
-				send_response("$OK");
+				if(profile_started_by_side_channel) {
+					side_channel_profile_active = false;
+					side_channel_profile_result = "done";
+					profile_started_by_side_channel = false;
+				} else {
+					send_response("$OK");
+				}
 
 				debugger_state = state::debugging;
 				activate_debugger();

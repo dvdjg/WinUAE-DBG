@@ -335,4 +335,39 @@ comandos laterales seguros para screenshot/profiler/input.
 
 ---
 
-*Actualizado: 2026-02-22; atribución Bartman vs fork local: 2026-05-14; canal lateral AMG: 2026-05-29*
+## 2026-05-30 - Modos seguros del canal lateral AMG
+
+Se ha ampliado el canal lateral TCP local en `od-win32/barto_gdbserver.cpp` para
+convivir con una sesion GDB activa sin robarle el socket.
+
+- Modos: `observe`, `assist` y `takeover`.
+- Debug lock: `lock status`, `lock acquire <owner> [mode]`, `lock release [owner]`.
+- Acciones seguras encoladas: `screenshot`, `input` y `profile`.
+- Consulta asincrona: `action status <id>`.
+- Estado de profiler lateral: `profile-status`.
+- `input` y `profile` exigen lock en modo `assist` o `takeover`.
+- Las acciones con efectos laterales se ejecutan desde `vsync_pre()`, no desde el
+  hilo TCP, para evitar llamadas a renderer/input/profiler desde un hilo externo.
+- El perfil iniciado por canal lateral no envia `$OK` al cliente GDB; actualiza
+  `profile-status` para no contaminar la sesion de Cursor/VS Code.
+
+Bug corregido durante la validacion: el tokenizer del canal lateral consumia las
+barras `\` de rutas Windows entrecomilladas. Ahora conserva `C:\...` correctamente
+y solo trata `\"` y `\\` como escapes reales.
+
+Validado desde `Amiga-C` con:
+
+```powershell
+node .\tools\debug\verify-side-channel-contract.mjs --settle-ms 9000
+```
+
+La prueba lanza `030_ehb_palette_zones`, mantiene GDB conectado, toma el lock
+`assist`, inyecta raton emulado, escribe una captura PNG lateral y genera un perfil
+de 1 frame.
+
+Pendiente: auditoria de escrituras, snapshots/rollback, pausa/reanudar por lock y
+zona scratch para diagnostico 68k.
+
+---
+
+*Actualizado: 2026-02-22; atribución Bartman vs fork local: 2026-05-14; canal lateral AMG: 2026-05-30*
