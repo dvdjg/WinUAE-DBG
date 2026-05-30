@@ -393,8 +393,22 @@ Validado desde `Amiga-C` con:
 La prueba escribe temporalmente `12345678` en `g_amg_run_status.detail`, verifica
 por lectura de memoria, consulta la auditoria y restaura el valor original.
 
-Pendiente: snapshots/savestates, pausa/reanudar por lock y zona scratch para
-diagnostico 68k.
+Pausa/reanudacion lateral:
+
+- `pause`: exige lock `takeover`, se encola y se ejecuta desde `vsync_pre()`.
+- `resume`: exige lock `takeover`, se ejecuta inmediatamente porque la cola de
+  `vsync_pre()` puede no procesarse mientras la emulacion esta pausada.
+
+Validado desde `Amiga-C` con:
+
+```powershell
+.\tools\debug\verify-side-channel-pause-resume.ps1
+```
+
+La prueba pausa, lee `g_amg_run_status` mientras el emulador esta detenido,
+reanuda y permite que el runner complete su captura final.
+
+Pendiente: snapshots/savestates y zona scratch para diagnostico 68k.
 
 ---
 

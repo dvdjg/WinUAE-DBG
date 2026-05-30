@@ -214,6 +214,8 @@ namespace barto_gdbserver {
 		profile,
 		poke,
 		rollback,
+		pause,
+		resume,
 	};
 	struct side_channel_action {
 		unsigned id{};
@@ -1470,6 +1472,68 @@ namespace barto_gdbserver {
 		return out.str();
 	}
 
+	static int side_channel_pc_breakpoint_count() {
+		int bp_count = 0;
+		for(const auto& bpn : bpnodes) {
+			if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC)
+				bp_count++;
+		}
+		return bp_count;
+	}
+
+	static std::string side_channel_pause_now() {
+		if(gdbconn == INVALID_SOCKET)
+			return "{\"ok\":false,\"error\":\"gdb_not_connected\"}";
+		if(debugger_state == state::profile || debugger_state == state::profiling || side_channel_profile_active)
+			return "{\"ok\":false,\"error\":\"busy_profiling\"}";
+		if(debugger_state == state::debugging) {
+			std::ostringstream already;
+			already << "{\"ok\":true,\"status\":\"already_paused\",\"pc\":\"0x" << hex32(M68K_GETPC)
+				<< "\",\"sr\":\"0x" << hex32(regs.sr) << "\"}";
+			return already.str();
+		}
+
+		trace_mode = 0;
+		trace_param[0] = trace_param[1] = trace_param[2] = 0;
+		exception_debugging = 0;
+		step_mode_pending = false;
+		debugger_state = state::debugging;
+		activate_debugger();
+
+		std::ostringstream out;
+		out << "{\"ok\":true,\"status\":\"paused\",\"pc\":\"0x" << hex32(M68K_GETPC)
+			<< "\",\"sr\":\"0x" << hex32(regs.sr) << "\"}";
+		return out.str();
+	}
+
+	static std::string side_channel_resume_now() {
+		if(gdbconn == INVALID_SOCKET)
+			return "{\"ok\":false,\"error\":\"gdb_not_connected\"}";
+		if(debugger_state == state::profile || debugger_state == state::profiling || side_channel_profile_active)
+			return "{\"ok\":false,\"error\":\"busy_profiling\"}";
+		if(debugger_state == state::connected) {
+			std::ostringstream already;
+			already << "{\"ok\":true,\"status\":\"already_running\",\"pc\":\"0x" << hex32(M68K_GETPC)
+				<< "\",\"sr\":\"0x" << hex32(regs.sr) << "\"}";
+			return already.str();
+		}
+
+		const int bp_count = side_channel_pc_breakpoint_count();
+		debugger_state = state::connected;
+		deactivate_debugger_preserve_processname();
+		debugging = -1;
+		set_special(SPCFLAG_BRK);
+		trace_mode = (bp_count > 0) ? TRACE_CHECKONLY : 0;
+		exception_debugging = 0;
+		step_mode_pending = false;
+
+		std::ostringstream out;
+		out << "{\"ok\":true,\"status\":\"running\",\"pc\":\"0x" << hex32(M68K_GETPC)
+			<< "\",\"sr\":\"0x" << hex32(regs.sr)
+			<< "\",\"breakpoints\":" << bp_count << "}";
+		return out.str();
+	}
+
 	static std::string side_channel_enqueue_action(side_channel_action_type type, const std::vector<std::string>& tokens) {
 		std::lock_guard<std::mutex> lock(side_channel_action_mutex);
 		side_channel_action action;
@@ -1522,6 +1586,10 @@ namespace barto_gdbserver {
 				result = side_channel_poke_now(action.tokens);
 			} else if(action.type == side_channel_action_type::rollback) {
 				result = side_channel_rollback_now(action.tokens);
+			} else if(action.type == side_channel_action_type::pause) {
+				result = side_channel_pause_now();
+			} else if(action.type == side_channel_action_type::resume) {
+				result = side_channel_resume_now();
 			}
 
 			std::lock_guard<std::mutex> lock(side_channel_action_mutex);
@@ -1662,6 +1730,18 @@ namespace barto_gdbserver {
 			if(!side_channel_has_takeover_lock())
 				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
 			return side_channel_enqueue_action(side_channel_action_type::rollback, side_channel_tokenize(line));
+		}
+		if(cmd == "pause") {
+			if(!side_channel_has_takeover_lock())
+				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
+			return side_channel_enqueue_action(side_channel_action_type::pause, side_channel_tokenize(line));
+		}
+		if(cmd == "resume") {
+			if(!side_channel_has_takeover_lock())
+				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
+			// Resume is intentionally immediate: once the emulator is paused,
+			// the normal vsync_pre() action queue may no longer be serviced.
+			return side_channel_resume_now();
 		}
 		if(cmd == "audit") {
 			std::string what;
