@@ -195,10 +195,25 @@ namespace barto_gdbserver {
 	static bool side_channel_profile_active = false;
 	static std::string side_channel_profile_outname;
 	static std::string side_channel_profile_result;
+	struct side_channel_write_audit {
+		unsigned id{};
+		uaecptr address{};
+		size_t length{};
+		std::string before_hex;
+		std::string after_hex;
+		std::string owner;
+		std::string label;
+		bool rolled_back{};
+	};
+	static std::mutex side_channel_audit_mutex;
+	static std::deque<side_channel_write_audit> side_channel_write_audits;
+	static unsigned side_channel_next_write_id = 1;
 	enum class side_channel_action_type {
 		screenshot,
 		input,
 		profile,
+		poke,
+		rollback,
 	};
 	struct side_channel_action {
 		unsigned id{};
@@ -1069,6 +1084,40 @@ namespace barto_gdbserver {
 		return hexdata;
 	}
 
+	static bool side_channel_write_bytes(uaecptr address, const std::vector<uae_u8>& bytes) {
+		for(size_t i = 0; i < bytes.size(); i++) {
+			addrbank* ad = &get_mem_bank(address + (uaecptr)i);
+			if(!ad)
+				return false;
+			ad->bput(address + (uaecptr)i, bytes[i]);
+		}
+		return true;
+	}
+
+	static bool side_channel_parse_hex_bytes(const std::string& text, std::vector<uae_u8>& bytes) {
+		std::string compact;
+		compact.reserve(text.size());
+		for(char c : text) {
+			if(c == ' ' || c == '\t' || c == '_' || c == '-')
+				continue;
+			compact += c;
+		}
+		if(compact.size() > 2 && compact[0] == '0' && (compact[1] == 'x' || compact[1] == 'X'))
+			compact = compact.substr(2);
+		if(compact.empty() || (compact.size() & 1))
+			return false;
+		bytes.clear();
+		bytes.reserve(compact.size() / 2);
+		for(size_t i = 0; i < compact.size(); i += 2) {
+			int hi = hex_to_int(compact[i]);
+			int lo = hex_to_int(compact[i + 1]);
+			if(hi < 0 || lo < 0)
+				return false;
+			bytes.push_back((uae_u8)((hi << 4) | lo));
+		}
+		return true;
+	}
+
 	static std::string side_channel_json_escape(const std::string& text) {
 		std::string out;
 		out.reserve(text.size() + 8);
@@ -1120,6 +1169,16 @@ namespace barto_gdbserver {
 	static bool side_channel_has_assist_lock() {
 		std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
 		return side_channel_debug_lock && side_channel_debug_mode != side_channel_mode::observe;
+	}
+
+	static bool side_channel_has_takeover_lock() {
+		std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
+		return side_channel_debug_lock && side_channel_debug_mode == side_channel_mode::takeover;
+	}
+
+	static std::string side_channel_current_owner() {
+		std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
+		return side_channel_lock_owner;
 	}
 
 	static std::string side_channel_lock_status_json() {
@@ -1290,6 +1349,127 @@ namespace barto_gdbserver {
 		return out.str();
 	}
 
+	static std::string side_channel_poke_now(const std::vector<std::string>& tokens) {
+		if(tokens.size() < 3)
+			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"poke <addr> <hex-bytes> [label]\"}";
+		uae_u32 address = 0;
+		if(!side_channel_parse_u32(tokens[1], address))
+			return "{\"ok\":false,\"error\":\"bad_address\"}";
+		std::vector<uae_u8> bytes;
+		if(!side_channel_parse_hex_bytes(tokens[2], bytes))
+			return "{\"ok\":false,\"error\":\"bad_hex\"}";
+		if(bytes.empty() || bytes.size() > 256)
+			return "{\"ok\":false,\"error\":\"bad_length\",\"max\":256}";
+		std::string before = side_channel_hex_memory(address, (int)bytes.size());
+		if(before.size() != bytes.size() * 2)
+			return "{\"ok\":false,\"error\":\"memory_not_readable\"}";
+		if(!side_channel_write_bytes(address, bytes))
+			return "{\"ok\":false,\"error\":\"memory_not_writable\"}";
+		std::string after = side_channel_hex_memory(address, (int)bytes.size());
+		if(after.size() != bytes.size() * 2)
+			return "{\"ok\":false,\"error\":\"verify_read_failed\"}";
+
+		side_channel_write_audit audit;
+		audit.address = address;
+		audit.length = bytes.size();
+		audit.before_hex = before;
+		audit.after_hex = after;
+		audit.owner = side_channel_current_owner();
+		audit.label = tokens.size() >= 4 ? tokens[3] : std::string();
+		{
+			std::lock_guard<std::mutex> lock(side_channel_audit_mutex);
+			audit.id = side_channel_next_write_id++;
+			side_channel_write_audits.push_back(audit);
+			while(side_channel_write_audits.size() > 128)
+				side_channel_write_audits.pop_front();
+		}
+
+		std::ostringstream out;
+		out << "{\"ok\":true,\"writeId\":" << audit.id
+			<< ",\"address\":\"0x" << hex32(address) << "\""
+			<< ",\"length\":" << audit.length
+			<< ",\"before\":\"" << audit.before_hex << "\""
+			<< ",\"after\":\"" << audit.after_hex << "\""
+			<< ",\"owner\":\"" << side_channel_json_escape(audit.owner) << "\""
+			<< ",\"label\":\"" << side_channel_json_escape(audit.label) << "\"}";
+		return out.str();
+	}
+
+	static std::string side_channel_rollback_now(const std::vector<std::string>& tokens) {
+		if(tokens.size() < 2)
+			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"rollback <write-id>\"}";
+		uae_u32 id = 0;
+		if(!side_channel_parse_u32(tokens[1], id))
+			return "{\"ok\":false,\"error\":\"bad_write_id\"}";
+
+		side_channel_write_audit audit;
+		bool found = false;
+		{
+			std::lock_guard<std::mutex> lock(side_channel_audit_mutex);
+			for(auto& item : side_channel_write_audits) {
+				if(item.id == id) {
+					audit = item;
+					found = true;
+					break;
+				}
+			}
+		}
+		if(!found)
+			return "{\"ok\":false,\"error\":\"unknown_write_id\"}";
+		if(audit.rolled_back)
+			return "{\"ok\":false,\"error\":\"already_rolled_back\"}";
+
+		std::vector<uae_u8> bytes;
+		if(!side_channel_parse_hex_bytes(audit.before_hex, bytes) || bytes.size() != audit.length)
+			return "{\"ok\":false,\"error\":\"bad_audit_data\"}";
+		if(!side_channel_write_bytes(audit.address, bytes))
+			return "{\"ok\":false,\"error\":\"rollback_write_failed\"}";
+		std::string current = side_channel_hex_memory(audit.address, (int)audit.length);
+		if(current != audit.before_hex)
+			return "{\"ok\":false,\"error\":\"rollback_verify_failed\"}";
+		{
+			std::lock_guard<std::mutex> lock(side_channel_audit_mutex);
+			for(auto& item : side_channel_write_audits) {
+				if(item.id == id) {
+					item.rolled_back = true;
+					break;
+				}
+			}
+		}
+
+		std::ostringstream out;
+		out << "{\"ok\":true,\"writeId\":" << id
+			<< ",\"address\":\"0x" << hex32(audit.address) << "\""
+			<< ",\"length\":" << audit.length
+			<< ",\"restored\":\"" << current << "\"}";
+		return out.str();
+	}
+
+	static std::string side_channel_audit_json(unsigned requested_id) {
+		std::lock_guard<std::mutex> lock(side_channel_audit_mutex);
+		std::ostringstream out;
+		out << "{\"ok\":true,\"writes\":[";
+		bool first = true;
+		for(const auto& audit : side_channel_write_audits) {
+			if(requested_id != 0 && audit.id != requested_id)
+				continue;
+			if(!first)
+				out << ",";
+			first = false;
+			out << "{\"id\":" << audit.id
+				<< ",\"address\":\"0x" << hex32(audit.address) << "\""
+				<< ",\"length\":" << audit.length
+				<< ",\"before\":\"" << audit.before_hex << "\""
+				<< ",\"after\":\"" << audit.after_hex << "\""
+				<< ",\"owner\":\"" << side_channel_json_escape(audit.owner) << "\""
+				<< ",\"label\":\"" << side_channel_json_escape(audit.label) << "\""
+				<< ",\"rolledBack\":" << (audit.rolled_back ? "true" : "false")
+				<< "}";
+		}
+		out << "]}";
+		return out.str();
+	}
+
 	static std::string side_channel_enqueue_action(side_channel_action_type type, const std::vector<std::string>& tokens) {
 		std::lock_guard<std::mutex> lock(side_channel_action_mutex);
 		side_channel_action action;
@@ -1338,6 +1518,10 @@ namespace barto_gdbserver {
 				result = side_channel_apply_input_now(action.tokens);
 			} else if(action.type == side_channel_action_type::profile) {
 				result = side_channel_start_profile_now(action.tokens);
+			} else if(action.type == side_channel_action_type::poke) {
+				result = side_channel_poke_now(action.tokens);
+			} else if(action.type == side_channel_action_type::rollback) {
+				result = side_channel_rollback_now(action.tokens);
 			}
 
 			std::lock_guard<std::mutex> lock(side_channel_action_mutex);
@@ -1468,6 +1652,31 @@ namespace barto_gdbserver {
 			if(!side_channel_has_assist_lock())
 				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"assist\"}";
 			return side_channel_enqueue_action(side_channel_action_type::profile, side_channel_tokenize(line));
+		}
+		if(cmd == "poke") {
+			if(!side_channel_has_takeover_lock())
+				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
+			return side_channel_enqueue_action(side_channel_action_type::poke, side_channel_tokenize(line));
+		}
+		if(cmd == "rollback") {
+			if(!side_channel_has_takeover_lock())
+				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
+			return side_channel_enqueue_action(side_channel_action_type::rollback, side_channel_tokenize(line));
+		}
+		if(cmd == "audit") {
+			std::string what;
+			in >> what;
+			if(what == "writes" || what.empty())
+				return side_channel_audit_json(0);
+			if(what == "write") {
+				std::string id_text;
+				in >> id_text;
+				uae_u32 id = 0;
+				if(!side_channel_parse_u32(id_text, id))
+					return "{\"ok\":false,\"error\":\"bad_write_id\"}";
+				return side_channel_audit_json(id);
+			}
+			return "{\"ok\":false,\"error\":\"bad_audit_command\"}";
 		}
 		if(cmd == "action") {
 			std::string action;

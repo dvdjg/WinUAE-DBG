@@ -376,8 +376,25 @@ Esta prueba pone un breakpoint GDB en `amg_debug_ready_probe`, continua hasta
 durante la ejecucion y en cada parada, verificando que PC/GDB y PC lateral
 coinciden.
 
-Pendiente: auditoria de escrituras, snapshots/rollback, pausa/reanudar por lock y
-zona scratch para diagnostico 68k.
+Primer takeover reversible:
+
+- `poke <addr> <hex-bytes> [label]`: exige lock `takeover`, lee bytes previos,
+  escribe hasta 256 bytes, verifica lectura posterior y crea una auditoria.
+- `rollback <write-id>`: exige lock `takeover`, restaura los bytes previos y marca
+  la auditoria como revertida.
+- `audit writes` / `audit write <id>`: lista las escrituras laterales realizadas.
+
+Validado desde `Amiga-C` con:
+
+```powershell
+.\tools\debug\verify-side-channel-takeover.ps1
+```
+
+La prueba escribe temporalmente `12345678` en `g_amg_run_status.detail`, verifica
+por lectura de memoria, consulta la auditoria y restaura el valor original.
+
+Pendiente: snapshots/savestates, pausa/reanudar por lock y zona scratch para
+diagnostico 68k.
 
 ---
 
