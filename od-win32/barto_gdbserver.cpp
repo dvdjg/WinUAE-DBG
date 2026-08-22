@@ -3737,14 +3737,29 @@ start_profile:
 		}
 
 		if(gdb_notify_process_entry && debugger_state == state::debugging) {
-			// NOTE: Do NOT clear gdb_notify_process_entry here — the connected block
-			// below uses it to decide whether to stop. We clear it after sending S05.
+			// Process entry is an internal synchronization point, not a user-visible
+			// breakpoint. Resolve relocation here and let the initial vCont;c run on.
 			debugger_state = state::connected;
 			const char* search_name = processname ? processname :
 				(saved_processname.empty() ? nullptr : saved_processname.c_str());
 			if(search_name && refresh_process_offsets(search_name, nullptr))
 				barto_log("GDBSERVER: offsets refreshed for '%s' at process entry\n", search_name);
-			barto_log("GDBSERVER: first stop in debugged process, notifying GDB\n");
+
+			// qOffsets commonly arrives before the Amiga process exists. At the first
+			// process instruction the PC is the runtime address of ELF .text, so it
+			// provides a safe fallback when the Exec process lookup is still late.
+			if(baseText == 0) {
+				const auto entryPc = munge24(m68k_getpc());
+				if(entryPc >= 0x1000 && entryPc < 0x1000000) {
+					baseText = entryPc;
+					sizeText = 0x100000;
+					barto_log("GDBSERVER: process-entry PC fallback baseText=0x%x\n", baseText);
+					relocate_breakpoints();
+				}
+			}
+
+			barto_log("GDBSERVER: process entry resolved; continuing without initial S05\n");
+			gdb_notify_process_entry = false;
 		}
 
 		// something stopped execution and entered debugger
@@ -3762,7 +3777,12 @@ start_profile:
 				pc >= 0x1000 && pc < 0x1000000) {
 				for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
 					uaecptr elfAddr = breakpoint_elf_addresses[i];
-					if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000 && pc > elfAddr) {
+					// A runtime PC must preserve the instruction's low address bits.
+					// Checking only pc > elfAddr falsely matched _start against any
+					// pending breakpoint and relocated that breakpoint onto _start.
+					const bool low_bits_match = (pc & 0xfff) == (elfAddr & 0xfff);
+					if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000 &&
+						low_bits_match && pc > elfAddr) {
 						uaecptr potential_loadOffset = pc - elfAddr;
 						uaecptr potential_baseText = ELF_TEXT_BASE + potential_loadOffset;
 
@@ -3855,7 +3875,11 @@ start_profile:
 				// PC is in potential user code range, check if it could be a relocated ELF address
 				for(size_t i = 0; i < breakpoint_elf_addresses.size(); i++) {
 					uaecptr elfAddr = breakpoint_elf_addresses[i];
-					if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000 && pc > elfAddr) {
+					const bool low_bits_match = (pc & 0xfff) == (elfAddr & 0xfff);
+					barto_log("AUTODETECT: candidate PC=0x%x ELF=0x%x low_bits=%d\n",
+						pc, elfAddr, low_bits_match ? 1 : 0);
+					if(elfAddr >= ELF_TEXT_BASE && elfAddr < ELF_TEXT_BASE + 0x100000 &&
+						low_bits_match && pc > elfAddr) {
 						// Calculate what baseText would be if this ELF address was at PC
 						uaecptr potential_loadOffset = pc - elfAddr;
 						uaecptr potential_baseText = ELF_TEXT_BASE + potential_loadOffset;
