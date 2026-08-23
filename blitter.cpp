@@ -2568,8 +2568,9 @@ uae_u8 *restore_blitter_new(uae_u8 *src)
 //			blt_info.blit_queued = BLITTER_MAX_PIPELINED_CYCLES;
 //		}
 		restore_u16();
-		restore_u8();
+		restore_u16(); // cycle_line_pipe[i]  (save_blitter_new writes this)
 //		cycle_line_pipe[i] = restore_u16();
+		restore_u8();
 //		cycle_line_slot[i] = restore_u8();
 	}
 

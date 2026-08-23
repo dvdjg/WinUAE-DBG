@@ -1485,11 +1485,11 @@ void savestate_rewind (void)
 	p = restore_floppy (p);
 	p = restore_custom (p);
 	p = restore_custom_extra (p);
-	if (restore_u32_func (&p))
+		if (restore_u32_func (&p))
 		p = restore_custom_event_delay (p);
-	p = restore_blitter_new (p);
-	p = restore_custom_agacolors (p);
-	for (i = 0; i < 8; i++) {
+		p = restore_blitter_new (p);
+		p = restore_custom_agacolors (p);
+		for (i = 0; i < 8; i++) {
 		p = restore_custom_sprite (i, p);
 	}
 	for (i = 0; i < 4; i++) {
@@ -1715,7 +1715,7 @@ retry2:
 	save_custom_extra (&len, p);
 	tlen += len;
 	p += len;
-
+	
 	if (bufcheck (st, p, 0))
 		goto retry;
 	p3 = p;
@@ -1726,19 +1726,30 @@ retry2:
 		tlen += len;
 		p += len;
 	}
-
+	
 	if (bufcheck (st, p, 0))
 		goto retry;
 	save_blitter_new (&len, p);
 	tlen += len;
 	p += len;
-
+	
 	if (bufcheck (st, p, 0))
 		goto retry;
-	save_custom_agacolors (&len, p);
-	tlen += len;
-	p += len;
-	for (i = 0; i < 8; i++) {
+	// BUGFIX (rewind format): save_custom_agacolors() returns NULL without
+	// setting *len when the config is non-AGA and no AGA colors are used.
+	// restore_custom_agacolors() always reads 256*4 bytes, so a NULL return
+	// left `p += len` using a stale len from the previous section, creating a
+	// hole that desynced the rewind restore (crash reading chipmem length).
+	if (save_custom_agacolors (&len, p)) {
+		tlen += len;
+		p += len;
+	} else {
+		len = 256 * 4;
+		memset (p, 0, len);
+		tlen += len;
+		p += len;
+	}
+		for (i = 0; i < 8; i++) {
 		if (bufcheck (st, p, 0))
 			goto retry;
 		save_custom_sprite(i, &len, p);

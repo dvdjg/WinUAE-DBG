@@ -16,6 +16,7 @@
 #include "newcpu.h"
 #include "debug.h"
 #include "inputdevice.h"
+#include "inputrecord.h"
 #include "uae.h"
 #include "debugmem.h"
 #include "render.h" // AmigaMonitor
@@ -234,6 +235,11 @@ namespace barto_gdbserver {
 	// Log file for debugging (writable via monitor logfile command)
 	static FILE* log_file = nullptr;
 	static std::string log_file_path;
+
+	// Trace system: `monitor trace on|off|status`. Cuando está activo, los
+	// eventos de watch/protect/rewind se escriben en el log (consola GDB +
+	// archivo `%TEMP%\winuae-gdb.log`). Se activa por defecto al conectar.
+	static bool g_trace = true;
 
 	static std::string string_replace_all(const std::string& str, const std::string& search, const std::string& replace) {
 		std::string copy(str);
@@ -2063,6 +2069,453 @@ namespace barto_gdbserver {
 		}
 	}
 
+	// ------------------------------------------------------------------
+	// Monitor extensions: status / watch / protect / rewind
+	// (WinUAE-DBG v2.1, e9k-inspired). See docs/WINUAE-MONITOR-EXTENSIONS.md
+	// ------------------------------------------------------------------
+
+	// Last watchpoint hit details, reported by `monitor watch last`.
+	// The RSP stop reply keeps the standard `watch:<addr>` field; extra
+	// detail (source tag, value, pc) travels here to avoid breaking GDB's
+	// parsing of unknown `name:value` pairs in the T reply.
+	struct gdb_last_watch_hit {
+		uaecptr addr{};
+		int rwi{};
+		int size{};
+		uae_u32 val{};
+		uae_u32 access_mask{};
+		uae_u32 reg{};
+		uaecptr pc{};
+		bool valid{};
+	};
+	static gdb_last_watch_hit gdb_watch_hit;
+
+	static std::string watch_src_name(uae_u32 mask) {
+		const uae_u32 cpuBits = MW_MASK_CPU_I | MW_MASK_CPU_D_R | MW_MASK_CPU_D_W;
+		const uae_u32 blitterBits = MW_MASK_BLITTER_A | MW_MASK_BLITTER_B | MW_MASK_BLITTER_C |
+			MW_MASK_BLITTER_D_N | MW_MASK_BLITTER_D_L | MW_MASK_BLITTER_D_F;
+		static const struct { uae_u32 bit; const char* name; } fine[] = {
+			{ MW_MASK_BPL_0, "bpl0" }, { MW_MASK_BPL_1, "bpl1" }, { MW_MASK_BPL_2, "bpl2" },
+			{ MW_MASK_BPL_3, "bpl3" }, { MW_MASK_BPL_4, "bpl4" }, { MW_MASK_BPL_5, "bpl5" },
+			{ MW_MASK_BPL_6, "bpl6" }, { MW_MASK_BPL_7, "bpl7" },
+			{ MW_MASK_SPR_0, "spr0" }, { MW_MASK_SPR_1, "spr1" }, { MW_MASK_SPR_2, "spr2" },
+			{ MW_MASK_SPR_3, "spr3" }, { MW_MASK_SPR_4, "spr4" }, { MW_MASK_SPR_5, "spr5" },
+			{ MW_MASK_SPR_6, "spr6" }, { MW_MASK_SPR_7, "spr7" },
+			{ MW_MASK_AUDIO_0, "audio0" }, { MW_MASK_AUDIO_1, "audio1" },
+			{ MW_MASK_AUDIO_2, "audio2" }, { MW_MASK_AUDIO_3, "audio3" },
+			{ MW_MASK_DISK, "disk" },
+		};
+		for(const auto& f : fine) {
+			if(mask == f.bit) return f.name;
+		}
+		if(mask == MW_MASK_COPPER) return "copper";
+		if(mask == blitterBits) return "blitter";
+		if((mask & ~cpuBits) == 0) return "cpu";
+		if(mask == (MW_MASK_ALL & ~cpuBits)) return "dma";
+		if(mask & (MW_MASK_ALL & ~cpuBits)) return "dma";
+		return "any";
+	}
+
+	static uae_u32 src_to_access_mask(const std::string& src) {
+		if(src == "all" || src == "any") return MW_MASK_ALL;
+		if(src == "cpu") return MW_MASK_CPU_I | MW_MASK_CPU_D_R | MW_MASK_CPU_D_W;
+		if(src == "cpud") return MW_MASK_CPU_D_R | MW_MASK_CPU_D_W;
+		if(src == "cpudw") return MW_MASK_CPU_D_W;
+		if(src == "cpudr") return MW_MASK_CPU_D_R;
+		if(src == "copper") return MW_MASK_COPPER;
+		if(src == "blitter") return MW_MASK_BLITTER_A | MW_MASK_BLITTER_B | MW_MASK_BLITTER_C |
+			MW_MASK_BLITTER_D_N | MW_MASK_BLITTER_D_L | MW_MASK_BLITTER_D_F;
+		if(src == "dma") return MW_MASK_ALL & ~(MW_MASK_CPU_I | MW_MASK_CPU_D_R | MW_MASK_CPU_D_W);
+		if(src == "disk") return MW_MASK_DISK;
+		if(src == "bpl") return MW_MASK_BPL_0 | MW_MASK_BPL_1 | MW_MASK_BPL_2 | MW_MASK_BPL_3 |
+			MW_MASK_BPL_4 | MW_MASK_BPL_5 | MW_MASK_BPL_6 | MW_MASK_BPL_7;
+		if(src == "spr") return MW_MASK_SPR_0 | MW_MASK_SPR_1 | MW_MASK_SPR_2 | MW_MASK_SPR_3 |
+			MW_MASK_SPR_4 | MW_MASK_SPR_5 | MW_MASK_SPR_6 | MW_MASK_SPR_7;
+		if(src == "audio") return MW_MASK_AUDIO_0 | MW_MASK_AUDIO_1 | MW_MASK_AUDIO_2 | MW_MASK_AUDIO_3;
+		// fine-grained: bpl0..bpl7, spr0..spr7, audio0..audio3
+		static const struct { const char* name; uae_u32 mask; } fine[] = {
+			{ "bpl0", MW_MASK_BPL_0 }, { "bpl1", MW_MASK_BPL_1 }, { "bpl2", MW_MASK_BPL_2 },
+			{ "bpl3", MW_MASK_BPL_3 }, { "bpl4", MW_MASK_BPL_4 }, { "bpl5", MW_MASK_BPL_5 },
+			{ "bpl6", MW_MASK_BPL_6 }, { "bpl7", MW_MASK_BPL_7 },
+			{ "spr0", MW_MASK_SPR_0 }, { "spr1", MW_MASK_SPR_1 }, { "spr2", MW_MASK_SPR_2 },
+			{ "spr3", MW_MASK_SPR_3 }, { "spr4", MW_MASK_SPR_4 }, { "spr5", MW_MASK_SPR_5 },
+			{ "spr6", MW_MASK_SPR_6 }, { "spr7", MW_MASK_SPR_7 },
+			{ "audio0", MW_MASK_AUDIO_0 }, { "audio1", MW_MASK_AUDIO_1 },
+			{ "audio2", MW_MASK_AUDIO_2 }, { "audio3", MW_MASK_AUDIO_3 },
+		};
+		for(const auto& f : fine) {
+			if(src == f.name) return f.mask;
+		}
+		return MW_MASK_ALL;
+	}
+
+	static std::string format_watch_line(int idx, const struct memwatch_node& m, const char* tag) {
+		char line[640];
+		char valbuf[40]{};
+		if(m.val_enabled)
+			snprintf(valbuf, sizeof(valbuf), "0x%08x", m.val);
+		else
+			snprintf(valbuf, sizeof(valbuf), "-");
+		snprintf(line, sizeof(line),
+			"[%d] %s addr=0x%08x size=%d rwi=%s src=%s mask=0x%08x val=%s mustchange=%d reg=0x%08x pc=0x%08x%s%s\n",
+			idx, tag, m.addr, m.size, (m.rwi == 1 ? "r" : (m.rwi == 2 ? "w" : "rw")),
+			watch_src_name(m.access_mask).c_str(), m.val_mask, valbuf, m.mustchange,
+			m.reg, m.pc, m.nobreak ? " nobreak" : "", m.reportonly ? " reportonly" : "");
+		return std::string(line);
+	}
+
+	static std::vector<std::string> tokenize_monitor(const std::string& rest) {
+		std::vector<std::string> tokens;
+		std::string cur;
+		bool q = false;
+		for(size_t i = 0; i < rest.size(); i++) {
+			char c = rest[i];
+			if(c == '"') { q = !q; continue; }
+			if(c == ' ' && !q) {
+				if(!cur.empty()) { tokens.push_back(cur); cur.clear(); }
+				continue;
+			}
+			cur += c;
+		}
+		if(!cur.empty()) tokens.push_back(cur);
+		return tokens;
+	}
+
+	static std::string monitor_watch_command(const std::string& cmd) {
+		std::string rest = cmd.substr(5); // strip "watch"
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+		auto tokens = tokenize_monitor(rest);
+
+		if(tokens.empty() || tokens[0] == "list") {
+			std::string out;
+			int n = 0;
+			for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+				if(mwnodes[i].size && !mwnodes[i].frozen) {
+					out += format_watch_line(i, mwnodes[i], "WATCH");
+					n++;
+				}
+			}
+			if(n == 0) out = "no watchpoints\n";
+			return out;
+		}
+		if(tokens[0] == "clear") {
+			int n = 0;
+			for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+				if(mwnodes[i].size && !mwnodes[i].frozen) {
+					mwnodes[i].size = 0;
+					n++;
+				}
+			}
+			if(n) memwatch_setup();
+			return "OK cleared " + std::to_string(n) + " watchpoints";
+		}
+		if(tokens[0] == "del") {
+			if(tokens.size() < 2) return "E01 usage: watch del <idx>";
+			int idx = atoi(tokens[1].c_str());
+			if(idx < 0 || idx >= MEMWATCH_TOTAL || !mwnodes[idx].size || mwnodes[idx].frozen)
+				return "E01 invalid watchpoint index";
+			mwnodes[idx].size = 0;
+			memwatch_setup();
+			return "OK";
+		}
+		if(tokens[0] == "last") {
+			if(!gdb_watch_hit.valid)
+				return "no watch hit recorded";
+			char line[256];
+			snprintf(line, sizeof(line), "addr=0x%08x rwi=%s size=%d src=%s val=0x%08x pc=0x%08x\n",
+				gdb_watch_hit.addr, (gdb_watch_hit.rwi == 1 ? "r" : (gdb_watch_hit.rwi == 2 ? "w" : "rw")),
+				gdb_watch_hit.size, watch_src_name(gdb_watch_hit.access_mask).c_str(),
+				gdb_watch_hit.val, gdb_watch_hit.pc);
+			return std::string(line);
+		}
+
+		// add: watch <addr|0x...> [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...] [old=|diff=|neq=] [src=...] [reg=0x...] [pc=0x...] [nobreak] [reportonly]
+		uaecptr addr = strtoul(tokens[0].c_str(), nullptr, 16);
+		int rwi = 3, size = 4;
+		uae_u32 val_mask = 0xffffffff, val = 0;
+		bool val_enabled = false, mustchange = false, nobreak = false, reportonly = false;
+		uae_u32 access_mask = MW_MASK_ALL;
+		uae_u32 reg = 0xffffffff, pc = 0xffffffff;
+		for(size_t i = 1; i < tokens.size(); i++) {
+			const std::string& t = tokens[i];
+			if(t == "r") rwi = 1;
+			else if(t == "w") rwi = 2;
+			else if(t == "rw") rwi = 3;
+			else if(t.substr(0, 5) == "size=") {
+				int b = atoi(t.c_str() + 5);
+				size = (b == 8) ? 1 : (b == 16) ? 2 : 4;
+			} else if(t.substr(0, 5) == "mask=") {
+				val_mask = strtoul(t.c_str() + 5, nullptr, 16);
+			} else if(t.substr(0, 4) == "val=" || t.substr(0, 6) == "value=") {
+				auto e = t.find('=');
+				val = strtoul(t.c_str() + e + 1, nullptr, 16);
+				val_enabled = true;
+			} else if(t.substr(0, 4) == "old=" || t.substr(0, 5) == "diff=" || t.substr(0, 4) == "neq=") {
+				mustchange = true;
+			} else if(t.substr(0, 4) == "src=") {
+				access_mask = src_to_access_mask(t.substr(4));
+			} else if(t.substr(0, 4) == "reg=") {
+				reg = strtoul(t.c_str() + 4, nullptr, 16);
+			} else if(t.substr(0, 3) == "pc=") {
+				pc = strtoul(t.c_str() + 3, nullptr, 16);
+			} else if(t == "nobreak") {
+				nobreak = true;
+			} else if(t == "reportonly") {
+				reportonly = true;
+			} else {
+				return "E01 unknown watch option: " + t;
+			}
+		}
+		for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+			auto& m = mwnodes[i];
+			if(m.size) continue;
+			m.addr = addr;
+			m.size = size;
+			m.rwi = rwi;
+			m.val = val;
+			m.val_mask = val_mask;
+			m.val_size = size;
+			m.val_enabled = val_enabled ? 1 : 0;
+			m.mustchange = mustchange ? 1 : 0;
+			m.access_mask = access_mask;
+			m.reg = reg;
+			m.pc = pc;
+			m.frozen = 0;
+			m.modval_written = 0;
+			m.bus_error = 0;
+			m.nobreak = nobreak;
+			m.reportonly = reportonly;
+			memwatch_setup();
+			if(g_trace)
+				barto_log("TRACE watch set [%d] addr=0x%08x size=%d rwi=%d src=%s val=%s mustchange=%d\n",
+					i, addr, size, rwi, watch_src_name(access_mask).c_str(),
+					val_enabled ? hex32(val).c_str() : "-", mustchange ? 1 : 0);
+			char out[128];
+			snprintf(out, sizeof(out), "OK watch [%d] at 0x%08x", i, addr);
+			return out;
+		}
+		return "E27 no free watchpoint slot";
+	}
+
+	static std::string monitor_protect_command(const std::string& cmd) {
+		std::string rest = cmd.substr(7); // strip "protect"
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+		auto tokens = tokenize_monitor(rest);
+
+		if(tokens.empty() || tokens[0] == "list") {
+			std::string out;
+			int n = 0;
+			for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+				if(mwnodes[i].size && mwnodes[i].frozen) {
+					out += format_watch_line(i, mwnodes[i], "PROTECT");
+					n++;
+				}
+			}
+			if(n == 0) out = "no protects\n";
+			return out;
+		}
+		if(tokens[0] == "clear") {
+			int n = 0;
+			for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+				if(mwnodes[i].size && mwnodes[i].frozen) {
+					mwnodes[i].size = 0;
+					n++;
+				}
+			}
+			if(n) memwatch_setup();
+			return "OK cleared " + std::to_string(n) + " protects";
+		}
+		if(tokens[0] == "del") {
+			if(tokens.size() < 2) return "E01 usage: protect del <addr> [size=8|16|32]";
+			uaecptr addr = strtoul(tokens[1].c_str(), nullptr, 16);
+			int want_size = 0;
+			for(size_t i = 2; i < tokens.size(); i++) {
+				if(tokens[i].substr(0, 5) == "size=") {
+					int b = atoi(tokens[i].c_str() + 5);
+					want_size = (b == 8) ? 1 : (b == 16) ? 2 : 4;
+				}
+			}
+			for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+				auto& m = mwnodes[i];
+				if(m.size && m.frozen && m.addr == addr && (!want_size || m.size == want_size)) {
+					m.size = 0;
+					memwatch_setup();
+					return "OK";
+				}
+			}
+			return "E01 protect not found";
+		}
+
+		// add: protect <addr> block|set=0x... [size=8|16|32] [src=...]
+		if(tokens.size() < 2) return "E01 usage: protect <addr> block|set=0x... [size=8|16|32] [src=...]";
+		uaecptr addr = strtoul(tokens[0].c_str(), nullptr, 16);
+		std::string mode = tokens[1];
+		int size = 4;
+		uae_u32 access_mask = MW_MASK_ALL;
+		uae_u32 val = 0;
+		bool setval = false;
+		for(size_t i = 2; i < tokens.size(); i++) {
+			if(tokens[i].substr(0, 5) == "size=") {
+				int b = atoi(tokens[i].c_str() + 5);
+				size = (b == 8) ? 1 : (b == 16) ? 2 : 4;
+			} else if(tokens[i].substr(0, 4) == "src=") {
+				access_mask = src_to_access_mask(tokens[i].substr(4));
+			} else {
+				return "E01 unknown protect option: " + tokens[i];
+			}
+		}
+		if(mode == "block") {
+			setval = false;
+		} else if(mode.substr(0, 4) == "set=") {
+			val = strtoul(mode.c_str() + 4, nullptr, 16);
+			setval = true;
+		} else {
+			return "E01 protect mode must be 'block' or 'set=0x...'";
+		}
+		for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+			auto& m = mwnodes[i];
+			if(m.size) continue;
+			m.addr = addr;
+			m.size = size;
+			m.rwi = 2;
+			m.val = val;
+			m.val_mask = 0xffffffff;
+			m.val_size = size;
+			m.val_enabled = setval ? 1 : 0;
+			m.mustchange = 0;
+			m.access_mask = access_mask;
+			m.reg = 0xffffffff;
+			m.pc = 0xffffffff;
+			m.frozen = 1;
+			m.modval_written = 0;
+			m.bus_error = 0;
+			m.nobreak = true;
+			m.reportonly = false;
+			memwatch_setup();
+			if(g_trace)
+				barto_log("TRACE protect set [%d] addr=0x%08x mode=%s size=%d src=%s\n",
+					i, addr, setval ? "set" : "block", size, watch_src_name(access_mask).c_str());
+			char out[192];
+			snprintf(out, sizeof(out), "OK protect [%d] addr=0x%08x mode=%s size=%d src=%s",
+				i, addr, setval ? "set" : "block", size, watch_src_name(access_mask).c_str());
+			return out;
+		}
+		return "E27 no free watchpoint slot";
+	}
+
+	static std::string monitor_trace_command(const std::string& cmd) {
+		std::string rest = cmd;
+		if(rest.substr(0, 5) == "trace")
+			rest = rest.substr(5);
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+
+		if(rest == "on" || rest == "1" || rest == "enable") {
+			g_trace = true;
+			return "OK trace enabled";
+		}
+		if(rest == "off" || rest == "0" || rest == "disable") {
+			g_trace = false;
+			return "OK trace disabled";
+		}
+		if(rest == "status" || rest.empty()) {
+			char out[128];
+			snprintf(out, sizeof(out), "trace=%s logfile=%s",
+				g_trace ? "on" : "off", log_file ? "open" : "closed");
+			return out;
+		}
+		return "E01 usage: trace on|off|status";
+	}
+
+	static std::string monitor_rewind_command(const std::string& cmd) {
+		std::string rest = cmd;
+		if(rest.substr(0, 6) == "rewind")
+			rest = rest.substr(6);
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+
+		if(rest == "start") {
+			if(!currprefs.statecapturerate)
+				return "E01 rewind disabled (statecapturerate=0)";
+			if(input_record)
+				return "OK rewind capture already active";
+			// Same path as the WinUAE "Record" button: WinUAE's rewind states
+			// are captured as part of input recording. inprec_open(NULL,NULL)
+			// opens an in-memory recording (no file) so event recording is safe.
+			input_record = INPREC_RECORD_NORMAL;
+			inprec_open(nullptr, nullptr);
+			barto_log("GDBSERVER: rewind capture started (input_record=%d)\n", input_record);
+			return input_record ? "OK rewind capture started (state capture active)" : "E01 could not start rewind capture";
+		}
+		if(rest == "stop") {
+			if(!input_record)
+				return "OK rewind capture already stopped";
+			inprec_close(true);
+			return "OK rewind capture stopped";
+		}
+		if(rest == "status") {
+			char out[256];
+			snprintf(out, sizeof(out), "input_record=%d statecapturerate=%d buffersize_mb=%d",
+				input_record, currprefs.statecapturerate, currprefs.statecapturebuffersize);
+			return out;
+		}
+		// default: rewind one frame
+		if(!currprefs.statecapturerate)
+			return "E01 rewind disabled (statecapturerate=0)";
+		if(!input_record)
+			return "E01 rewind capture not active (use: monitor rewind start)";
+		if(savestate_dorewind(1)) {
+			if(g_trace)
+				barto_log("TRACE rewind scheduled frame=%u\n", (unsigned)vsync_counter);
+			return "OK rewind scheduled (takes effect on next continue/frame)";
+		}
+		return "E01 no rewind state available";
+	}
+
+	static std::string monitor_status_command() {
+		std::string out;
+		char line[512];
+		snprintf(line, sizeof(line), "cycles=0x%llx\n", (unsigned long long)(get_cycles() / cpucycleunit));
+		out += line;
+		snprintf(line, sizeof(line), "frame=%u\n", (unsigned)vsync_counter);
+		out += line;
+		snprintf(line, sizeof(line), "vpos=%d\n", vpos);
+		out += line;
+		snprintf(line, sizeof(line), "hpos=%u\n", (unsigned)agnus_hpos);
+		out += line;
+		snprintf(line, sizeof(line), "warp=%d\n", currprefs.turbo_emulation ? 1 : 0);
+		out += line;
+		snprintf(line, sizeof(line), "cpu_cycle_exact=%d\n", currprefs.cpu_cycle_exact ? 1 : 0);
+		out += line;
+		snprintf(line, sizeof(line), "blitter_cycle_exact=%d\n", currprefs.blitter_cycle_exact ? 1 : 0);
+		out += line;
+		snprintf(line, sizeof(line), "baseText=0x%x\n", baseText);
+		out += line;
+		snprintf(line, sizeof(line), "sizeText=0x%x\n", sizeText);
+		out += line;
+		int bps = 0;
+		for(const auto& bpn : bpnodes) {
+			if(bpn.enabled && bpn.type == BREAKPOINT_REG_PC)
+				bps++;
+		}
+		int wps = 0, prot = 0;
+		for(const auto& mwn : mwnodes) {
+			if(mwn.size) {
+				if(mwn.frozen) prot++;
+				else wps++;
+			}
+		}
+		snprintf(line, sizeof(line), "breakpoints=%d\n", bps);
+		out += line;
+		snprintf(line, sizeof(line), "watchpoints=%d\n", wps);
+		out += line;
+		snprintf(line, sizeof(line), "protects=%d\n", prot);
+		out += line;
+		snprintf(line, sizeof(line), "rewind=%s\n", currprefs.statecapturerate > 0 ? "on" : "off");
+		out += line;
+		snprintf(line, sizeof(line), "rewind_buffersize_mb=%d\n", currprefs.statecapturebuffersize);
+		out += line;
+		return out;
+	}
+
 	void handle_packet() {
 		tracker _;
 		if(data_available()) {
@@ -2644,6 +3097,25 @@ namespace barto_gdbserver {
 										append_mem_bank_info(output, label, z3fastmem_bank[i]);
 									}
 									response += to_hex(output);
+								} else if(cmd == "status" || cmd.substr(0, strlen("status ")) == "status ") {
+									// syntax: monitor status
+									response += to_hex(monitor_status_command());
+								} else if(cmd == "watch" || cmd.substr(0, strlen("watch ")) == "watch ") {
+									// e9k-style watchpoints with predicates and source tags.
+									// syntax: monitor watch <addr> [r|w|rw] [size=8|16|32] [mask=0x...] [val=0x...] [old=|diff=|neq=] [src=cpu|cpud|cpudw|cpudr|copper|blitter|dma|all] [reg=0x...] [pc=0x...] [nobreak] [reportonly]
+									//         monitor watch list | clear | del <idx> | last
+									response += to_hex(monitor_watch_command(cmd));
+								} else if(cmd == "protect" || cmd.substr(0, strlen("protect ")) == "protect ") {
+									// e9k-style memory protect/cheat.
+									// syntax: monitor protect <addr> block|set=0x... [size=8|16|32] [src=...]
+									//         monitor protect list | clear | del <addr> [size=8|16|32]
+									response += to_hex(monitor_protect_command(cmd));
+								} else if(cmd == "rewind" || cmd.substr(0, strlen("rewind ")) == "rewind ") {
+									// syntax: monitor rewind  (rewinds one frame; takes effect on next continue)
+									response += to_hex(monitor_rewind_command(cmd));
+								} else if(cmd == "trace" || cmd.substr(0, strlen("trace ")) == "trace ") {
+									// syntax: monitor trace on|off|status
+									response += to_hex(monitor_trace_command(cmd));
 								} else if(cmd == "offset" || cmd.substr(0, strlen("offset ")) == "offset ") {
 									// syntax: monitor offset [set <address>]
 									// Without args: Returns Text=<baseText>;Data=<baseData>;Bss=<baseBss>;LoadOffset=<loadOffset>;SizeText=<sizeText>
@@ -3910,6 +4382,19 @@ start_profile:
 			if(mwhit.size) {
 				for(const auto& mwn : mwnodes) {
 					if(mwn.size && mwhit.addr >= mwn.addr && mwhit.addr < mwn.addr + mwn.size) {
+						// stash details for `monitor watch last`
+						gdb_watch_hit.addr = mwhit.addr;
+						gdb_watch_hit.rwi = mwhit.rwi;
+						gdb_watch_hit.size = mwhit.size;
+						gdb_watch_hit.val = mwhit.val;
+						gdb_watch_hit.access_mask = mwhit.access_mask;
+						gdb_watch_hit.reg = mwhit.reg;
+						gdb_watch_hit.pc = mwhit.pc;
+						gdb_watch_hit.valid = true;
+						if(g_trace)
+							barto_log("TRACE watch hit addr=0x%08x rwi=%d size=%d src=%s val=0x%08x pc=0x%08x\n",
+								mwhit.addr, mwhit.rwi, mwhit.size, watch_src_name(mwhit.access_mask).c_str(),
+								mwhit.val, mwhit.pc);
 						if(mwn.addr == 0) {
 							response = "S0B"; // undefined behavior -> SIGSEGV
 						} else {

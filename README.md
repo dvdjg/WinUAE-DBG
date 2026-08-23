@@ -201,7 +201,21 @@ El ejecutable **winuae-gdb.exe** incluye un servidor GDB (puerto 2345) para depu
 - **reset** – restaurar savestate en la entrada del proceso
 - **profile** – perfilado de CPU (avanzado)
 
-Ver [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) para detalles y ejemplos.
+### Novedades v2.1 (estilo engine9000)
+
+| Comando | Descripción |
+|---|---|
+| `monitor status` | Telemetría: ciclos, frame, vpos/hpos, warp, `baseText`, nº de bp/wp/protects, rewind. |
+| `monitor watch` | Watchpoints con predicados y filtro de **origen** (`src=cpu\|cpud\|cpudw\|cpudr\|copper\|blitter\|bpl0-7\|spr0-7\|audio0-3\|disk\|dma\|all`), `val=`, `mask=`, `old=/diff=`, `reg=`, `pc=`, `nobreak`. Subcomandos `list`, `clear`, `del`, `last`. |
+| `monitor protect` | Cheat/protect: `block` impide escrituras, `set=0x…` fuerza un valor. |
+| `monitor rewind` | Rewind: `start`/`stop`/`status` gestionan la captura (grabación de input en memoria); sin subcomando, rebobina un frame. Restore **arreglado** (ver doc); la sesión GDB puede quedar inerte tras el restore. |
+| `monitor trace` | Sistema de trazas: `on`/`off`/`status`. Registra hits de watch/protect/rewind en `%TEMP%\winuae-gdb.log` (activo por defecto). |
+
+Detalles, ejemplos y notas del motor (descomposición de escrituras de 32 bits,
+requisito de input recording para rewind, fixes del formato de rewind, issue
+del build x64): **[docs/WINUAE-MONITOR-EXTENSIONS.md](docs/WINUAE-MONITOR-EXTENSIONS.md)**.
+
+Ver [GDB_MONITOR_COMMANDS.md](GDB_MONITOR_COMMANDS.md) para detalles y ejemplos de los comandos base.
 
 ---
 

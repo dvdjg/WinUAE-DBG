@@ -99,6 +99,74 @@ Restore the savestate at process entry. Requires `debugging_trigger` to be set i
 
 - **Example**: `monitor reset`
 
+### status
+
+Return emulator telemetry (one key per line): `cycles`, `frame`, `vpos`,
+`hpos`, `warp`, `cpu_cycle_exact`, `blitter_cycle_exact`, `baseText`,
+`sizeText`, `breakpoints`, `watchpoints`, `protects`, `rewind`,
+`rewind_buffersize_mb`.
+
+- **Example**: `monitor status`
+
+### watch
+
+High-level watchpoints with predicates and source filters (e9k-style).
+Built on WinUAE memwatch, which already tags the access source
+(CPU / blitter / copper / DMA).
+
+```
+monitor watch list
+monitor watch clear
+monitor watch del <idx>
+monitor watch last
+monitor watch <addr> [r|w|rw] [size=8|16|32] [mask=0x…] [val=0x…|value=0x…]
+                     [old=|diff=|neq=] [src=cpu|cpud|cpudw|cpudr|copper|blitter|dma|all]
+                     [reg=0x…] [pc=0x…] [nobreak] [reportonly]
+```
+
+- **Examples**:
+  - `monitor watch 0xdff180 w size=16 src=copper` (Copper writes a custom register)
+  - `monitor watch 0x20000 w size=32 src=blitter val=0x0`
+  - `monitor watch last` (last hit detail: addr, r/w, size, source, value, PC)
+  - `monitor watch clear`
+
+### protect
+
+Memory protect/cheat: block writes or force values. Uses memwatch `frozen`,
+so it acts on accesses from the emulated program (CPU/blitter/copper/DMA)
+while it runs, not on the debugger's own writes while paused.
+
+```
+monitor protect list
+monitor protect clear
+monitor protect del <addr> [size=8|16|32]
+monitor protect <addr> block [size=8|16|32] [src=…]
+monitor protect <addr> set=0x… [size=8|16|32] [src=…]
+```
+
+- **Examples**:
+  - `monitor protect 0x20000 block size=32`
+  - `monitor protect 0xdff096 set=0x0000 size=16`
+  - `monitor protect list`
+
+### rewind
+
+Rewind control (experimental). WinUAE captures rewind states as part of input
+recording, so state capture must be active first.
+
+```
+monitor rewind              # rewind one frame (takes effect on next continue)
+monitor rewind start        # enable state capture (in-memory input recording)
+monitor rewind stop         # disable state capture
+monitor rewind status       # input_record / statecapturerate / buffersize_mb
+```
+
+**NOTE**: the rewind *restore* is fragile with the GDB server attached and may
+crash the emulator (`savestate_rewind`, pre-existing WinUAE issue). Use in
+disposable sessions only.
+
+- **Examples**: `monitor rewind start`, `monitor rewind`, `monitor rewind stop`
+
 ### profile \<num_frames\> \<unwind_file\> \<out_file\>
 
 Frame profiler (same data as [vscode-amiga-debug](https://github.com/dvdjg/vscode-amiga-debug)): runs for N frames (1–100), optionally with an unwind table for symbol resolution, and writes a binary file containing:
