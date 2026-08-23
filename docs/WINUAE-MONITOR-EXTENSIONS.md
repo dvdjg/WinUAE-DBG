@@ -255,6 +255,57 @@ Ver `mcp-winuae-emu` (`tools/`).
 
 ---
 
+## `monitor debugperiph` — periférico de depuración en memoria
+
+Port de los "Amiga Debug Peripherals" de engine9000. Se mapea un banco de
+memoria de 64K en **0xB70000** (región libre en A500; engine9000 usa 0xFC0000,
+pero en WinUAE esa zona es ROM) para que el **programa emulado se
+auto-instrumente**:
+
+| Dirección | Acceso | Uso |
+|---|---|---|
+| `0xB70000` | write byte | carácter a la consola de depuración (flushea con `0`, `\n` o `\r`; sale por GDB O + `%TEMP%\winuae-gdb.log` con prefijo `DBGPERIPH:`) |
+| `0xB70004` | write long | solicita un breakpoint en esa dirección |
+| `0xB70008` | write long | base de sección `.text` |
+| `0xB7000C` | write long | base de sección `.data` |
+| `0xB70010` | write long | base de sección `.bss` |
+| `0xB70020` | write long | slot de checkpoint (0-63); se registra ciclos+frame |
+| `0xB7E900..E924` | read long | debug args 0-9 (`monitor debugperiph arg <n> <valor>`) |
+| `0xB7E928` | read long | contador de ciclos de CPU (`get_cycles()/cpucycleunit`) |
+
+Las escrituras de longs aceptan byte/word/long (MOVE.L del 68000 cycle-exact se
+descompone en dos words; GDB M escribe byte a byte). El banco se mapea
+automáticamente al primer `vsync_pre` cuando el gdbserver está activo.
+
+### `monitor debugperiph` — subcomandos
+
+```
+monitor debugperiph                    # estado: mapped/base/console/args/checkpoints
+monitor debugperiph arg <n> <valor>    # fija el debug arg n (0-9)
+monitor debugperiph console            # devuelve el buffer de consola pendiente
+monitor debugperiph checkpoints        # vuelca los checkpoints registrados
+monitor debugperiph flush              # flushea la consola
+```
+
+### Ejemplo (programa 68k bare-metal)
+
+```
+        MOVE.W  #$2700,SR                  ; modo supervisor, IRQ off
+        MOVE.B  D0,(0xB70000).L            ; carácter a consola
+        MOVE.L  #$20000,(0xB70004).L       ; breakpoint en 0x20000
+        MOVE.L  (0xB7E928).L,D0            ; leer ciclos de CPU
+```
+
+### Verificación
+
+`mcp-winuae-emu/scripts/verify-debug-peripheral.mjs` (7/7): mapeo, consola,
+contador de ciclos, debug args, checkpoint, breakpoint vía periférico y flujo
+end-to-end. `verify-visual-copper.mjs` confirma con ollama local (qwen3-vl)
+que la renderización sigue funcionando tras mapear el periférico (pantalla
+magenta del cobre).
+
+---
+
 ## `monitor trace` — sistema de trazas
 
 El servidor GDB escribe toda su actividad en un **log persistente**

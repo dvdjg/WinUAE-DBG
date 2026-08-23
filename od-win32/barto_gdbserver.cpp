@@ -241,6 +241,264 @@ namespace barto_gdbserver {
 	// archivo `%TEMP%\winuae-gdb.log`). Se activa por defecto al conectar.
 	static bool g_trace = true;
 
+	// ------------------------------------------------------------------
+	// Debug peripheral (e9k-inspired "Amiga Debug Peripherals")
+	//
+	// Se mapea un banco de memoria de 64K en 0xB70000 (región libre en A500;
+	// engine9000 usa 0xFC0000 pero en WinUAE esa zona es ROM). El programa
+	// emulado se auto-instrumenta escribiendo/leyendo aquí:
+	//   0xB70000  byte write  -> carácter a consola de depuración
+	//   0xB70004  long write  -> solicita breakpoint en esa dirección
+	//   0xB70008  long write  -> base de sección .text
+	//   0xB7000C  long write  -> base de sección .data
+	//   0xB70010  long write  -> base de sección .bss
+	//   0xB70020  long write  -> slot de checkpoint (0-63)
+	//   0xB7E900..B7E924  long read  -> debug args 0-9 (monitor debugperiph arg)
+	//   0xB7E928  long read  -> contador de ciclos de CPU
+	// ------------------------------------------------------------------
+	static constexpr uaecptr DP_BASE = 0xb70000;
+	static constexpr int DP_BANK = DP_BASE >> 16;
+	static constexpr uaecptr DP_CONSOLE = 0x0000;
+	static constexpr uaecptr DP_BREAK = 0x0004;
+	static constexpr uaecptr DP_TEXT = 0x0008;
+	static constexpr uaecptr DP_DATA = 0x000C;
+	static constexpr uaecptr DP_BSS = 0x0010;
+	static constexpr uaecptr DP_CHECKPOINT = 0x0020;
+	static constexpr uaecptr DP_ARGS = 0xE900;
+	static constexpr uaecptr DP_CYCLES = 0xE928;
+
+	static std::string dp_console;
+	static uae_u32 dp_args[10] = { 0 };
+	static uae_u32 dp_text_base = 0, dp_data_base = 0, dp_bss_base = 0;
+	static uae_u32 dp_checkpoint_slot = 0;
+	static uae_u32 dp_checkpoint_cycles[64];
+	static uae_u32 dp_checkpoint_frames[64];
+	static uae_u32 dp_checkpoint_count[64];
+	enum { DP_T_BREAK = 0, DP_T_TEXT, DP_T_DATA, DP_T_BSS, DP_T_CHECKPOINT, DP_T_TOTAL };
+	static uae_u32 dp_target_value[DP_T_TOTAL];
+	static bool dp_target_dirty[DP_T_TOTAL];
+	static bool dp_mapped = false;
+
+	static void dp_console_flush() {
+		if(!dp_console.empty()) {
+			barto_log("DBGPERIPH: %s\n", dp_console.c_str());
+			dp_console.clear();
+		}
+	}
+	static void dp_console_char(uae_u8 b) {
+		if(b == 0 || b == '\n' || b == '\r')
+			dp_console_flush();
+		else if(dp_console.size() < 4096)
+			dp_console += (char)b;
+	}
+
+	static int dp_target_of(uae_u32 off) {
+		switch(off & ~3) {
+		case DP_BREAK: return DP_T_BREAK;
+		case DP_TEXT: return DP_T_TEXT;
+		case DP_DATA: return DP_T_DATA;
+		case DP_BSS: return DP_T_BSS;
+		case DP_CHECKPOINT: return DP_T_CHECKPOINT;
+		}
+		return -1;
+	}
+
+	static void dp_handle_long_target(int t) {
+		if(!dp_target_dirty[t])
+			return;
+		dp_target_dirty[t] = false;
+		const uae_u32 v = dp_target_value[t];
+		switch(t) {
+		case DP_T_BREAK: {
+			barto_log("DBGPERIPH: breakpoint request 0x%08x\n", v);
+			bool ok = false;
+			for(int i = 0; i < BREAKPOINT_TOTAL; i++) {
+				auto& bpn = bpnodes[i];
+				if(bpn.enabled)
+					continue;
+				bpn.value1 = v;
+				bpn.value2 = 0;
+				bpn.mask = 0xffffffff;
+				bpn.type = BREAKPOINT_REG_PC;
+				bpn.oper = BREAKPOINT_CMP_EQUAL;
+				bpn.opersigned = false;
+				bpn.cnt = 0;
+				bpn.chain = -1;
+				bpn.enabled = 1;
+				trace_mode = TRACE_CHECKONLY;
+				barto_log("DBGPERIPH: breakpoint instalado en 0x%08x (slot %d)\n", v, i);
+				ok = true;
+				break;
+			}
+			if(!ok)
+				barto_log("DBGPERIPH: sin slot libre para breakpoint 0x%08x\n", v);
+			break;
+		}
+		case DP_T_TEXT: dp_text_base = v; barto_log("DBGPERIPH: .text base=0x%08x\n", v); break;
+		case DP_T_DATA: dp_data_base = v; barto_log("DBGPERIPH: .data base=0x%08x\n", v); break;
+		case DP_T_BSS:  dp_bss_base = v;  barto_log("DBGPERIPH: .bss base=0x%08x\n", v); break;
+		case DP_T_CHECKPOINT: {
+			const int slot = (int)(v & 63);
+			dp_checkpoint_slot = (uae_u32)slot;
+			dp_checkpoint_cycles[slot] = (uae_u32)(get_cycles() / cpucycleunit);
+			dp_checkpoint_frames[slot] = (uae_u32)vsync_counter;
+			dp_checkpoint_count[slot]++;
+			if(g_trace)
+				barto_log("DBGPERIPH: checkpoint %d cycles=%u frame=%u\n", slot, dp_checkpoint_cycles[slot], dp_checkpoint_frames[slot]);
+			break;
+		}
+		}
+	}
+
+	static void dp_write_byte(uae_u32 off, uae_u8 b) {
+		if(off == DP_CONSOLE) { dp_console_char(b); return; }
+		const int t = dp_target_of(off);
+		if(t < 0)
+			return;
+		const int byte_idx = off & 3;
+		uae_u32 v = dp_target_value[t];
+		v &= ~(0xffu << (8 * (3 - byte_idx)));
+		v |= (uae_u32)b << (8 * (3 - byte_idx));
+		dp_target_value[t] = v;
+		dp_target_dirty[t] = true;
+		if(byte_idx == 3)
+			dp_handle_long_target(t);
+	}
+	static void dp_write_word(uae_u32 off, uae_u16 v) {
+		const int t = dp_target_of(off);
+		if(t >= 0) {
+			if((off & 3) == 0) {
+				// high word de la descomposición de MOVE.L (cycle-exact)
+				dp_target_value[t] = (uae_u32)v << 16;
+				dp_target_dirty[t] = true;
+			} else {
+				dp_target_value[t] |= v;
+				dp_target_dirty[t] = true;
+				dp_handle_long_target(t);
+			}
+		} else if((off & ~3) == DP_CONSOLE) {
+			dp_console_char((uae_u8)(v >> 8));
+			dp_console_char((uae_u8)(v & 0xff));
+		}
+	}
+	static void dp_write_long(uae_u32 off, uae_u32 v) {
+		const int t = dp_target_of(off);
+		if(t >= 0) {
+			dp_target_value[t] = v;
+			dp_target_dirty[t] = true;
+			dp_handle_long_target(t);
+		} else if((off & ~3) == DP_CONSOLE) {
+			dp_console_char((uae_u8)(v >> 24));
+			dp_console_char((uae_u8)(v >> 16));
+			dp_console_char((uae_u8)(v >> 8));
+			dp_console_char((uae_u8)(v & 0xff));
+		}
+	}
+
+	static uae_u32 dp_read32(uae_u32 off) {
+		if(off >= DP_ARGS && off < DP_ARGS + 10 * 4)
+			return dp_args[(off - DP_ARGS) >> 2];
+		if(off == DP_CYCLES)
+			return (uae_u32)(get_cycles() / cpucycleunit);
+		return 0xffffffff;
+	}
+
+	static uae_u32 REGPARAM2 dp_lget(uaecptr addr) { return dp_read32(addr & 0xffff); }
+	static uae_u32 REGPARAM2 dp_wget(uaecptr addr) {
+		const uae_u32 off = addr & 0xffff;
+		const uae_u32 v = dp_read32(off & ~3);
+		return (uae_u16)(v >> (8 * (2 - (off & 2))));
+	}
+	static uae_u32 REGPARAM2 dp_bget(uaecptr addr) {
+		const uae_u32 off = addr & 0xffff;
+		const uae_u32 v = dp_read32(off & ~3);
+		return (uae_u8)(v >> (8 * (3 - (off & 3))));
+	}
+	static void REGPARAM2 dp_lput(uaecptr addr, uae_u32 v) { dp_write_long(addr & 0xffff, v); }
+	static void REGPARAM2 dp_wput(uaecptr addr, uae_u32 v) { dp_write_word(addr & 0xffff, (uae_u16)v); }
+	static void REGPARAM2 dp_bput(uaecptr addr, uae_u32 v) { dp_write_byte(addr & 0xffff, (uae_u8)v); }
+
+	addrbank debug_peripheral_bank = {
+		dp_lget, dp_wget, dp_bget,
+		dp_lput, dp_wput, dp_bput,
+		default_xlate, default_check, NULL, NULL, _T("DebugPeripheral"),
+		dummy_lgeti, dummy_wgeti,
+		ABFLAG_IO | ABFLAG_SAFE, S_READ, S_WRITE
+	};
+
+	static void dp_map_peripheral() {
+		if(dp_mapped)
+			return;
+		auto& cur = get_mem_bank(DP_BASE);
+		if(&cur != &dummy_bank)
+			barto_log("DBGPERIPH: sobrescribo banco en 0x%08x (name=0x%x) con el periférico\n",
+				(unsigned)DP_BASE, (unsigned)cur.name);
+		map_banks(&debug_peripheral_bank, DP_BANK, 1, 0);
+		dp_mapped = true;
+		barto_log("DBGPERIPH: debug peripheral mapeado en 0x%08x\n", (unsigned)DP_BASE);
+	}
+
+	static std::string monitor_debugperiph_command(const std::string& cmd) {
+		dp_map_peripheral();
+		std::string rest = cmd;
+		if(rest.substr(0, 11) == "debugperiph")
+			rest = rest.substr(11);
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+
+		if(rest.substr(0, 4) == "arg ") {
+			auto s = rest.substr(4);
+			int n = atoi(s.c_str());
+			auto sp = s.find(' ');
+			uae_u32 value = 0;
+			if(sp != std::string::npos)
+				value = (uae_u32)strtoul(s.c_str() + sp + 1, nullptr, 0);
+			if(n < 0 || n > 9)
+				return "E01 arg index 0-9";
+			dp_args[n] = value;
+			char out[128];
+			snprintf(out, sizeof(out), "OK debug arg %d = 0x%08x", n, value);
+			return out;
+		}
+		if(rest == "console") {
+			return dp_console.empty() ? "(empty)" : dp_console;
+		}
+		if(rest == "flush") {
+			dp_console_flush();
+			return "OK flushed";
+		}
+		if(rest == "checkpoints") {
+			std::string out;
+			char line[128];
+			for(int i = 0; i < 64; i++) {
+				if(dp_checkpoint_count[i]) {
+					snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u\n",
+						i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i]);
+					out += line;
+				}
+			}
+			return out.empty() ? "no checkpoints" : out;
+		}
+		// status
+		std::string out;
+		char line[256];
+		snprintf(line, sizeof(line), "mapped=%d base=0x%08x\n", dp_mapped ? 1 : 0, (unsigned)DP_BASE);
+		out += line;
+		snprintf(line, sizeof(line), "console=\"%s\"\n", dp_console.c_str());
+		out += line;
+		snprintf(line, sizeof(line), "text=0x%08x data=0x%08x bss=0x%08x\n", dp_text_base, dp_data_base, dp_bss_base);
+		out += line;
+		snprintf(line, sizeof(line), "args=");
+		out += line;
+		for(int i = 0; i < 10; i++) {
+			snprintf(line, sizeof(line), "%s0x%08x", i ? "," : "", dp_args[i]);
+			out += line;
+		}
+		out += "\n";
+		snprintf(line, sizeof(line), "checkpoint_slot=%u\n", dp_checkpoint_slot);
+		out += line;
+		return out;
+	}
+
 	static std::string string_replace_all(const std::string& str, const std::string& search, const std::string& replace) {
 		std::string copy(str);
 		size_t start = 0;
@@ -3116,6 +3374,9 @@ namespace barto_gdbserver {
 								} else if(cmd == "trace" || cmd.substr(0, strlen("trace ")) == "trace ") {
 									// syntax: monitor trace on|off|status
 									response += to_hex(monitor_trace_command(cmd));
+								} else if(cmd == "debugperiph" || cmd.substr(0, strlen("debugperiph ")) == "debugperiph ") {
+									// syntax: monitor debugperiph [arg <n> <value> | console | flush | checkpoints]
+									response += to_hex(monitor_debugperiph_command(cmd));
 								} else if(cmd == "offset" || cmd.substr(0, strlen("offset ")) == "offset ") {
 									// syntax: monitor offset [set <address>]
 									// Without args: Returns Text=<baseText>;Data=<baseData>;Bss=<baseBss>;LoadOffset=<loadOffset>;SizeText=<sizeText>
@@ -3840,6 +4101,8 @@ namespace barto_gdbserver {
 	void vsync_pre() {
 		if(!(currprefs.debugging_features & (1 << 2))) // "gdbserver"
 			return;
+
+		dp_map_peripheral(); // map debug peripheral as soon as the memory system is ready
 
 		side_channel_process_actions();
 

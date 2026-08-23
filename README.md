@@ -210,6 +210,7 @@ El ejecutable **winuae-gdb.exe** incluye un servidor GDB (puerto 2345) para depu
 | `monitor protect` | Cheat/protect: `block` impide escrituras, `set=0x…` fuerza un valor. |
 | `monitor rewind` | Rewind: `start`/`stop`/`status` gestionan la captura (grabación de input en memoria); sin subcomando, rebobina un frame. Restore **arreglado** (ver doc); la sesión GDB puede quedar inerte tras el restore. |
 | `monitor trace` | Sistema de trazas: `on`/`off`/`status`. Registra hits de watch/protect/rewind en `%TEMP%\winuae-gdb.log` (activo por defecto). |
+| `monitor debugperiph` | **Periférico de depuración** (e9k "Amiga Debug Peripherals") en `0xB70000`: consola (`0xB70000`), breakpoints (`0xB70004`), secciones, checkpoints (`0xB70020`), debug args (`0xB7E900..`), contador de ciclos (`0xB7E928`). Subcomandos `arg`/`console`/`checkpoints`/`flush`. |
 
 Detalles, ejemplos y notas del motor (descomposición de escrituras de 32 bits,
 requisito de input recording para rewind, fixes del formato de rewind, issue
