@@ -10,6 +10,21 @@ Ruta de implementación: `od-win32/barto_gdbserver.cpp`
 (`monitor_status_command`, `monitor_watch_command`, `monitor_protect_command`,
 `monitor_rewind_command` y `gdb_watch_hit`).
 
+## Guía rápida de cuándo usar
+
+| Necesidad | Comando / tool |
+|---|---|
+| ¿Corre? frame, warp, contadores | `monitor status` / `winuae_emulator_status` |
+| ¿Quién toca X? (CPU/copper/blitter/DMA) | `monitor watch <addr> w src=<origen>` + `watch last` / `winuae_watchpoint_set_ext` |
+| Congelar o forzar memoria | `monitor protect <addr> block\|set=…` / `winuae_protect` |
+| Registrar eventos host | `monitor trace on` → `%TEMP%\winuae-gdb.log` / `winuae_trace` |
+| Inspeccionar un estado pasado | `monitor rewind` + canal lateral / `winuae_rewind` + `winuae_side_read` |
+| Telemetría del propio programa (trazas in-Amiga) | periférico `0xB70000` / `winuae_debugperiph` |
+| Perfil de ciclos por segmento | checkpoints (`0xB70020`) + `monitor debugperiph checkpoints` |
+
+Guía "cuándo usar" completa para la IA:
+`Amiga-Cpp/docs/debugging/DEBUG-WINUAE-V2-GUIDE.md`.
+
 ## Índice de comandos
 
 | Comando | Descripción |
