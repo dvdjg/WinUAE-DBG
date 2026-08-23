@@ -3938,6 +3938,9 @@ start_profile:
 
 			// store custom registers
 			profile_custom_regs = save_custom(&profile_custom_regs_size, nullptr, TRUE);
+			// save_custom_agacolors() returns NULL (non-AGA, no colors) WITHOUT setting
+			// the size; reset it so the profile writes len=0 instead of a stale length.
+			profile_custom_agacolors_size = 0;
 			profile_custom_agacolors = save_custom_agacolors(&profile_custom_agacolors_size, nullptr);
 
 			// reset idle

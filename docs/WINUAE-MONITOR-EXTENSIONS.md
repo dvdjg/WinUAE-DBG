@@ -217,18 +217,32 @@ asimétricos), ambos arreglados en este fork:
    chipmem (crash en `savestate_rewind`, `savestate.cpp:1512`). Fix en
    `blitter.cpp`.
 
-Tras el fix, el rewind **restaura sin crashear**, pero la sesión GDB queda
-**sin respuesta** después del restore (el loop del emulador no vuelve a
-serviciar paquetes GDB; el emulador sigue vivo y el canal lateral 2346 sigue
-funcionando). Limitación inherente a restaurar un estado completo con el
-depurador adjunto. Uso recomendado:
+Tras el fix, el rewind **restaura sin crashear**, pero la emulación queda
+**congelada**: el CPU no avanza ciclos después del restore (verificado por el
+canal lateral: `state`/`cycles` constantes). El servidor GDB además deja de
+serviciar paquetes y **reconectar no lo recupera**.
 
-- `monitor rewind start` (captura) es seguro y verificable.
-- `monitor rewind` (restore): ya no crashea; para seguir depurando, **reconectar**
-  el cliente GDB (`winuae_connect_existing`) o usar el canal lateral para
-  telemetría.
-- Para "volver atrás" de forma robusta con GDB activo: savestate completo a
-  archivo o `monitor reset` (con `debugging_trigger`).
+**El canal lateral (2346) sí permite inspeccionar el snapshot restaurado**:
+`state`, `regs` y `mem` siguen funcionando tras el restore. Es el patrón útil
+para la IA: *rewind para inspeccionar un estado pasado* (leer registros y
+memoria de un momento anterior), aunque la ejecución no continúa desde ahí.
+No funciona: *rewind y seguir ejecutando*.
+
+En `mcp-winuae-emu` esto se expone como **`winuae_side_read`**
+(`state` / `regs` / `mem <addr> <len>` / `runstatus <addr>`), independiente de
+GDB, para leer el snapshot tras un restore.
+
+Uso recomendado:
+
+- `monitor rewind start` (captura) es seguro y verificable, pero la captura
+  depende del timing de `hsync_counter % statecapturerate` (250 por defecto):
+  puede tardar varios segundos en haber un estado, y en ocasiones ninguno a los
+  7s. Si `monitor rewind` responde `E01 no rewind state available`, esperar
+  más (o repetir tras correr unos segundos).
+- `monitor rewind` (restore): congela la emulación pero deja el snapshot
+  legible por canal lateral (`state`/`regs`/`mem`) — útil para análisis.
+- Para "volver atrás y continuar": savestate completo a archivo o `monitor
+  reset` (con `debugging_trigger`).
 
 ---
 
@@ -284,9 +298,32 @@ node scripts/verify-monitor-extensions.mjs
 
 El build **x64** de WinUAE-DBG tiene un problema **preexistente** (no
 causado por estas extensiones): durante el boot con el cliente GDB conectado,
-el servidor no responde al handshake y puede generar un crash (excepción
+el servidor acepta la conexión TCP pero **no responde al handshake**
+(`qSupported` hace timeout) y en ocasiones genera un crash (excepción
 `0xC0000005`) en la región JIT (`0x4002xxxx`, rutas de `compemu_support`).
-Estas extensiones se añadieron y verificaron con el build **x86**
-(`winuae-gdb.exe`, el que usa por defecto `mcp-winuae-emu`), que funciona
-correctamente. Para depurar vía GDB: usar el build x86. El issue x64 debe
-investigarse por separado (JIT/compemu + arranque del gdbserver en x64).
+
+**Investigación realizada**:
+- Confirmado preexistente: con `git stash` (sin las extensiones) el x64
+  tampoco conecta.
+- Desactivar JIT (`jit_enable=no`, `cpu_compatible=true`) **no** arregla el
+  handshake, ni con `debugging_trigger`.
+- **Diagnóstico (determinante)**: en el build x64 el emulador está **congelado
+  desde el boot** — el CPU no avanza ciclos (verificado por canal lateral:
+  `state`/`cycles` constante, `debuggerState=inited`), y `vsync_pre()` nunca se
+  ejecuta. El proceso consume CPU (bucle en el intérprete sin avanzar ciclos).
+  El servidor GDB **no** es el problema: es víctima (nunca recibe servicio
+  porque la emulación no llega a vsync). Probado con CPU software (sin
+  cycle-exact, sin JIT) y sigue congelado.
+
+**Conclusiones**:
+- El bug es de **emulación del build x64** (el intérprete 68000 queda en un
+  bucle sin avanzar el contador de ciclos al arrancar), **no** del servidor
+  GDB ni del JIT.
+- El crash intermitente (`0xC0000005` en `0x4002xxxx`) es consecuencia del
+  mismo estado corrupto (PC del 68000 apuntando a la región del buffer JIT).
+- **Fix**: requiere adjuntar un debugger (Windbg/CDB) al proceso
+  `winuae-gdb-x64.exe` al arrancar y romper para localizar el bucle del
+  intérprete. No es corregible sin una sesión de depuración del proceso x64.
+
+**Mientras tanto**: usar el build **x86** (`winuae-gdb.exe`, el que usa por
+defecto `mcp-winuae-emu`), que funciona correctamente.
