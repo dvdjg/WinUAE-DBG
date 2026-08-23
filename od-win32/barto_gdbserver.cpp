@@ -2040,6 +2040,29 @@ namespace barto_gdbserver {
 		}
 	}
 
+	// GDB es fragil durante el handshake inicial (qSupported, qTStatus, qOffsets,
+	// etc.): si WinUAE emite salida de consola (O) intercalada, GDB desincroniza su
+	// parser ("Invalid hex digit 79", "Bogus trace status reply"). Diferimos toda
+	// salida O hasta que GDB emite el primer vCont (continue/step) y la vaciamos ahi.
+	bool gdb_handshake_done{};
+	std::string pending_o_output;
+
+	void send_o_output(const std::string& text) {
+		if(gdbconn == INVALID_SOCKET || text.empty())
+			return;
+		std::string response = "$O";
+		for(const auto& ch : text)
+			response += hex8(static_cast<uint8_t>(ch));
+		send_response(response);
+	}
+
+	void flush_pending_o_output() {
+		if(!pending_o_output.empty()) {
+			send_o_output(pending_o_output);
+			pending_o_output.clear();
+		}
+	}
+
 	void handle_packet() {
 		tracker _;
 		if(data_available()) {
@@ -2919,6 +2942,13 @@ namespace barto_gdbserver {
 									response += "vCont;c;C;s;S;t;r";
 								} else if(request.substr(0, strlen("vCont;")) == "vCont;") {
 									auto actions = request.substr(strlen("vCont;"));
+									// GDB has finished the connection handshake and is
+									// resuming the target: safe to start sending console
+									// output (O) and flush anything deferred so far.
+									if(!gdb_handshake_done) {
+										gdb_handshake_done = true;
+										flush_pending_o_output();
+									}
 									while(!actions.empty()) {
 										std::string action;
 										// split actions by ';'
@@ -3614,12 +3644,13 @@ start_profile:
 	std::string KPutCharOutput;
 
 	void output(const char* string) {
-		if(gdbconn != INVALID_SOCKET && !in_handle_packet) {
-			std::string response = "$O";
-			while(*string)
-				response += hex8(*string++);
-			send_response(response);
+		if(gdbconn == INVALID_SOCKET || in_handle_packet)
+			return;
+		if(!gdb_handshake_done) {
+			pending_o_output += string;
+			return;
 		}
+		send_o_output(string);
 	}
 
 	void log_output(const TCHAR* tstring) {
@@ -3863,10 +3894,10 @@ start_profile:
 				auto ascii = static_cast<uint8_t>(m68k_dreg(regs, 0));
 				KPutCharOutput += ascii;
 				if(ascii == '\0') {
-					std::string response = "$O";
-					for(const auto& ch : KPutCharOutput)
-						response += hex8(ch);
-					send_response(response);
+					if(gdb_handshake_done)
+						send_o_output(KPutCharOutput);
+					else
+						pending_o_output += KPutCharOutput;
 					KPutCharOutput.clear();
 				}
 				deactivate_debugger();
