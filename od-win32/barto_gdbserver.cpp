@@ -440,6 +440,18 @@ namespace barto_gdbserver {
 	bool keep_listener_after_disconnect{};
 	uint32_t baseText{};
 	uint32_t sizeText{};
+	// GDB subtracts ELF_TEXT_BASE when the first qOffsets query returns zero.
+	// Remember that state so deferred Z0 addresses can be restored before
+	// relocation instead of being shifted 0x400 bytes backwards.
+	bool offsets_unresolved{};
+	// When GDB connected before the Amiga program was loaded, its qOffsets was 0
+	// and its symbol table is unrelocated. Any software breakpoint that hits at a
+	// runtime address is then silently auto-continued by GDB (no *stopped is ever
+	// emitted), so the extension never gets a chance to relocate breakpoints. Force
+	// a plain S05 at process entry in that case so GDB surfaces the stop and the
+	// extension can refresh loadOffset and re-establish breakpoints at runtime
+	// addresses before the user code runs.
+	bool gdb_force_s05_at_entry{};
 	uint32_t systemStackLower{}, systemStackUpper{};
 	uint32_t stackLower{}, stackUpper{};
 	std::vector<uint32_t> sections; // base for every section
@@ -2101,6 +2113,7 @@ namespace barto_gdbserver {
 									// This is critical because the client may call qOffsets after stopping
 									// at a breakpoint, and we need to return the detected offset
 									if(baseText > 0 && sizeText > 0) {
+										offsets_unresolved = false;
 										barto_log("GDBSERVER: qOffsets - using AUTODETECTED baseText=0x%x, sizeText=0x%x (%d sections)\n",
 											baseText, sizeText, (int)sections.size());
 										// Return sections if available, otherwise just baseText
@@ -2202,6 +2215,7 @@ namespace barto_gdbserver {
 												}
 											}
 											baseText = 0;
+											offsets_unresolved = true;
 											barto_log("GDBSERVER: qOffsets - scanning segments for process '%s':\n", 
 												ln_Name ? ln_Name : "(null)");
 											for(int i = 0; segList; i++) {
@@ -2235,9 +2249,10 @@ namespace barto_gdbserver {
 												response = "$0";
 											}
 										}
-									} else {
-										barto_log("GDBSERVER: qOffsets - no process found, returning sections\n");
-										// Return current sections (may be empty) instead of E01
+					} else {
+						barto_log("GDBSERVER: qOffsets - no process found, returning sections\n");
+						offsets_unresolved = true;
+						// Return current sections (may be empty) instead of E01
 										// E01 causes GDB to cache an error state and never re-query
 										if(!sections.empty()) {
 											response = "$";
@@ -3014,9 +3029,18 @@ namespace barto_gdbserver {
 									return;
 								} else if(request.substr(0, 2) == "Z0") { // set software breakpoint
 									auto comma = request.find(',', strlen("Z0"));
-									if(comma != std::string::npos) {
-										uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
-										barto_log("Z0: Received breakpoint request: addr=0x%x, baseText=0x%x, sizeText=0x%x\n", adr, baseText, sizeText);
+					if(comma != std::string::npos) {
+						uaecptr adr = strtoul(request.data() + strlen("Z0,"), nullptr, 16);
+						const uaecptr rawAdr = adr;
+						// When the initial qOffsets returned zero, GDB subtracts the
+						// linker's 0x400 text base before sending Z0. Restore the ELF
+						// address so deferred relocation uses the same convention as
+						// the symbol table and the documented workflow.
+						if(offsets_unresolved && adr >= ELF_TEXT_BASE && adr < ELF_TEXT_BASE + 0x100000) {
+							adr += ELF_TEXT_BASE;
+							barto_log("Z0: normalized unresolved qOffsets address 0x%x -> ELF 0x%x\n", rawAdr, adr);
+						}
+						barto_log("Z0: Received breakpoint request: addr=0x%x, baseText=0x%x, sizeText=0x%x\n", adr, baseText, sizeText);
 										
 										// Determine if address needs relocation:
 										// 1. If address is already in loaded program range (baseText..baseText+sizeText) -> use directly
@@ -3736,7 +3760,8 @@ start_profile:
 			debugmem_trace = true;
 		}
 
-		if(gdb_notify_process_entry && debugger_state == state::debugging) {
+		if(gdb_notify_process_entry &&
+			(debugger_state == state::debugging || debugger_state == state::connected)) {
 			// Process entry is an internal synchronization point, not a user-visible
 			// breakpoint. Resolve relocation here and let the initial vCont;c run on.
 			debugger_state = state::connected;
@@ -3759,6 +3784,15 @@ start_profile:
 			}
 
 			barto_log("GDBSERVER: process entry resolved; continuing without initial S05\n");
+			// If GDB had unresolved offsets (connected before the process loaded),
+			// it will silently auto-continue any breakpoint that hits at a runtime
+			// address. Signal the stop handler below to force a plain S05 so GDB
+			// surfaces the stop and the extension can re-establish breakpoints at
+			// runtime addresses before the user code executes.
+			if(offsets_unresolved || baseText == 0) {
+				gdb_force_s05_at_entry = true;
+				barto_log("GDBSERVER: forcing S05 at process entry (GDB offsets were unresolved)\n");
+			}
 			gdb_notify_process_entry = false;
 		}
 
@@ -3923,6 +3957,13 @@ start_profile:
 						// unwind PC & stack for better debugging experience (otherwise we're probably just somewhere in Kickstart)
 						regs.pc = regs.instruction_pc_user_exception; // don't know size of opcode that caused exception
 						m68k_areg(regs, A7 - A0) = regs.usp;
+					} else if(gdb_force_s05_at_entry) {
+						// GDB connected before the process loaded; its breakpoint list
+						// is at ELF addresses so it would silently continue this stop.
+						// Use a plain S05 (signal-received) so GDB surfaces it and the
+						// extension can relocate breakpoints to runtime addresses.
+						gdb_force_s05_at_entry = false;
+						response = "S05";
 					} else {
 						response = "T05swbreak:;";
 					}
@@ -3930,6 +3971,7 @@ start_profile:
 				}
 			}
 send_response:
+			gdb_force_s05_at_entry = false;
 			send_response("$" + response);
 			// Do not clear TRACE_CHECKONLY here or GDB breakpoints stop working after the first hit
 			if(trace_mode == TRACE_SKIP_INS || trace_mode == TRACE_RANGE_PC || trace_mode == TRACE_NRANGE_PC)
