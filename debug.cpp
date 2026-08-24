@@ -1,4 +1,4 @@
-/*
+﻿/*
 * UAE - The Un*x Amiga Emulator
 *
 * Debugger
@@ -3836,6 +3836,27 @@ struct memwatch_node mwnodes[MEMWATCH_TOTAL];
 static int mwnodes_start, mwnodes_end;
 /*static*/ struct memwatch_node mwhit; // BARTO
 
+// Ignore list para `train ignore` (direcciones que no vuelven a romper)
+uae_u32 memwatch_ignore_addrs[MEMWATCH_IGNORE_MAX];
+int memwatch_ignore_count = 0;
+bool memwatch_ignore_contains(uaecptr addr) {
+	for(int i = 0; i < memwatch_ignore_count; i++)
+		if(memwatch_ignore_addrs[i] == addr)
+			return true;
+	return false;
+}
+bool memwatch_ignore_add(uaecptr addr) {
+	if(memwatch_ignore_contains(addr))
+		return false;
+	if(memwatch_ignore_count >= MEMWATCH_IGNORE_MAX)
+		return false;
+	memwatch_ignore_addrs[memwatch_ignore_count++] = addr;
+	return true;
+}
+void memwatch_ignore_clear(void) {
+	memwatch_ignore_count = 0;
+}
+
 #define MUNGWALL_SLOTS 16
 struct mungwall_data
 {
@@ -4194,6 +4215,10 @@ uae_u8 *restore_debug_memwatch (uae_u8 *src)
 		m->reg = restore_u32();
 		m->nobreak = restore_u8();
 		m->reportonly = restore_u8();
+		// campos nuevos (estado efimero del debugger; no se serializan)
+		m->any_addr = 0;
+		m->oldval_enabled = 0;
+		m->oldval = 0;
 		restore_store_size ();
 	}
 	return src;
@@ -4382,9 +4407,14 @@ static int memwatch_func (uaecptr addr, int rwi, int size, uae_u32 *valp, uae_u3
 			brk = 1;
 		if (!brk && size == 4 && ((addr + 2 >= addr2 && addr + 2 < addr3) || (addr + 3 >= addr2 && addr + 3 < addr3)))
 			brk = 1;
+		if (!brk && m->any_addr)
+			brk = 1; // e9k `train`: casar cualquier direccion
 
 		if (!brk)
 			continue;
+
+		if (memwatch_ignore_contains(addr))
+			continue; // e9k `train ignore`: no volver a romper en esta direccion
 
 		if (m->bus_error) {
 			if (((m->bus_error & 1) && (rwi & 1)) || ((m->bus_error & 4) && (rwi & 4)) || ((m->bus_error & 2) && (rwi & 2))) {
@@ -4439,6 +4469,12 @@ static int memwatch_func (uaecptr addr, int rwi, int size, uae_u32 *valp, uae_u3
 
 		if (m->mustchange && rwi == 2 && isoldval) {
 			if (oldval == *valp)
+				continue;
+		}
+
+		if (m->oldval_enabled) {
+			// e9k `train <from> <to>`: el valor anterior debe ser exactamente <from>
+			if (!isoldval || oldval != m->oldval)
 				continue;
 		}
 
@@ -4854,6 +4890,13 @@ static void memwatch_remap (uaecptr addr)
 			mwnodes_start = i;
 		if (mwnodes_end < i)
 			mwnodes_end = i;
+		if (m->any_addr) {
+			// e9k `train`: casar cualquier direccion -> remapear todo el espacio
+			// (memwatch_remap respeta MEMWATCH_STORE_SLOTS; se cubren los bancos RAM).
+			for (uaecptr a = 0; a < 0x01000000; a += 0x10000)
+				memwatch_remap(a);
+			continue;
+		}
 		int addr = m->addr & ~65535;
 		int eaddr = (m->addr + m->size + 65535) & ~65535;
 		while (addr < eaddr) {
@@ -9382,3 +9425,5 @@ bool debug_sprintf(uaecptr addr, uae_u32 val, int size)
 	}
 	return true;
 }
+
+

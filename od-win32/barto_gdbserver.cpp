@@ -2662,11 +2662,16 @@ namespace barto_gdbserver {
 			snprintf(valbuf, sizeof(valbuf), "0x%08x", m.val);
 		else
 			snprintf(valbuf, sizeof(valbuf), "-");
+		std::string extras;
+		if(m.nobreak) extras += " nobreak";
+		if(m.reportonly) extras += " reportonly";
+		if(m.any_addr) extras += " any_addr";
+		if(m.oldval_enabled) extras += " old=" + hex32(m.oldval);
 		snprintf(line, sizeof(line),
-			"[%d] %s addr=0x%08x size=%d rwi=%s src=%s mask=0x%08x val=%s mustchange=%d reg=0x%08x pc=0x%08x%s%s\n",
+			"[%d] %s addr=0x%08x size=%d rwi=%s src=%s mask=0x%08x val=%s mustchange=%d reg=0x%08x pc=0x%08x%s\n",
 			idx, tag, m.addr, m.size, (m.rwi == 1 ? "r" : (m.rwi == 2 ? "w" : "rw")),
 			watch_src_name(m.access_mask).c_str(), m.val_mask, valbuf, m.mustchange,
-			m.reg, m.pc, m.nobreak ? " nobreak" : "", m.reportonly ? " reportonly" : "");
+			m.reg, m.pc, extras.c_str());
 		return std::string(line);
 	}
 
@@ -2930,6 +2935,81 @@ namespace barto_gdbserver {
 			return out;
 		}
 		return "E01 usage: trace on|off|status";
+	}
+
+	// e9k `train`: romper cuando una escritura cambia un valor de <from> a <to>
+	// en CUALQUIER direccion. `train ignore` anade la ultima direccion disparada
+	// a la ignore-list (no vuelve a romper); `train clear` la vacia.
+	static std::string monitor_train_command(const std::string& cmd) {
+		std::string rest = cmd.substr(5); // strip "train"
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+		auto tokens = tokenize_monitor(rest);
+
+		if(tokens.empty()) {
+			std::string out = "ignore_list=";
+			if(memwatch_ignore_count == 0) out += "(vacía)";
+			for(int i = 0; i < memwatch_ignore_count; i++) {
+				char line[32];
+				snprintf(line, sizeof(line), "%s0x%08x", i ? "," : "", (unsigned)memwatch_ignore_addrs[i]);
+				out += line;
+			}
+			out += "\n";
+			return out;
+		}
+		if(tokens[0] == "clear") {
+			memwatch_ignore_clear();
+			return "OK ignore list cleared";
+		}
+		if(tokens[0] == "ignore") {
+			if(!gdb_watch_hit.valid)
+				return "E01 no watch hit recorded";
+			const uae_u32 a = gdb_watch_hit.addr;
+			if(memwatch_ignore_add(a))
+				return "OK ignored 0x" + hex32(a);
+			return "E01 ya en la ignore list (o llena)";
+		}
+		// train <from> <to> [size=8|16|32]
+		if(tokens.size() < 2)
+			return "E01 usage: train <from> <to> [size=8|16|32] | ignore | clear";
+		uae_u32 from = (uae_u32)strtoul(tokens[0].c_str(), nullptr, 0);
+		uae_u32 to = (uae_u32)strtoul(tokens[1].c_str(), nullptr, 0);
+		int size = 4;
+		for(size_t i = 2; i < tokens.size(); i++) {
+			if(tokens[i].substr(0, 5) == "size=") {
+				int b = atoi(tokens[i].c_str() + 5);
+				size = (b == 8) ? 1 : (b == 16) ? 2 : 4;
+			} else {
+				return "E01 unknown train option: " + tokens[i];
+			}
+		}
+		for(int i = 0; i < MEMWATCH_TOTAL; i++) {
+			auto& m = mwnodes[i];
+			if(m.size) continue;
+			m.addr = 0;
+			m.size = size;
+			m.rwi = 2;
+			m.val = to;
+			m.val_mask = 0xffffffff;
+			m.val_size = size;
+			m.val_enabled = 1;
+			m.mustchange = 1;
+			m.oldval = from;
+			m.oldval_enabled = 1;
+			m.any_addr = 1;
+			m.access_mask = MW_MASK_ALL;
+			m.reg = 0xffffffff;
+			m.pc = 0xffffffff;
+			m.frozen = 0;
+			m.modval_written = 0;
+			m.bus_error = 0;
+			m.nobreak = 0;
+			m.reportonly = 0;
+			memwatch_setup();
+			char out[160];
+			snprintf(out, sizeof(out), "OK train [%d] any_addr from=0x%08x to=0x%08x size=%d", i, from, to, size);
+			return out;
+		}
+		return "E27 no free watchpoint slot";
 	}
 
 	static std::string monitor_rewind_command(const std::string& cmd) {
@@ -3616,6 +3696,10 @@ namespace barto_gdbserver {
 									// syntax: monitor protect <addr> block|set=0x... [size=8|16|32] [src=...]
 									//         monitor protect list | clear | del <addr> [size=8|16|32]
 									response += to_hex(monitor_protect_command(cmd));
+								} else if(cmd == "train" || cmd.substr(0, strlen("train ")) == "train ") {
+									// e9k-style train: break on value transition <from>-><to> at any address.
+									// syntax: monitor train <from> <to> [size=8|16|32] | ignore | clear
+									response += to_hex(monitor_train_command(cmd));
 								} else if(cmd == "rewind" || cmd.substr(0, strlen("rewind ")) == "rewind ") {
 									// syntax: monitor rewind  (rewinds one frame; takes effect on next continue)
 									response += to_hex(monitor_rewind_command(cmd));
@@ -4895,7 +4979,7 @@ start_profile:
 			//if(memwatch_triggered) // can't use, debug() will reset it, so just check mwhit
 			if(mwhit.size) {
 				for(const auto& mwn : mwnodes) {
-					if(mwn.size && mwhit.addr >= mwn.addr && mwhit.addr < mwn.addr + mwn.size) {
+					if(mwn.size && (mwn.any_addr || (mwhit.addr >= mwn.addr && mwhit.addr < mwn.addr + mwn.size))) {
 						// stash details for `monitor watch last`
 						gdb_watch_hit.addr = mwhit.addr;
 						gdb_watch_hit.rwi = mwhit.rwi;
@@ -4909,7 +4993,7 @@ start_profile:
 							barto_log("TRACE watch hit addr=0x%08x rwi=%d size=%d src=%s val=0x%08x pc=0x%08x\n",
 								mwhit.addr, mwhit.rwi, mwhit.size, watch_src_name(mwhit.access_mask).c_str(),
 								mwhit.val, mwhit.pc);
-						if(mwn.addr == 0) {
+						if(mwn.addr == 0 && !mwn.any_addr) {
 							response = "S0B"; // undefined behavior -> SIGSEGV
 						} else {
 //while(!IsDebuggerPresent()) Sleep(100); __debugbreak();

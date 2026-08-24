@@ -32,6 +32,7 @@ Guía "cuándo usar" completa para la IA:
 | `monitor status` | Telemetría del emulador (ciclos, frame, vpos/hpos, warp, contadores) |
 | `monitor watch` | Watchpoints con predicados y filtro por origen (e9k-style) |
 | `monitor protect` | Protect/cheat: bloquear escrituras o forzar valores |
+| `monitor train` | Romper cuando una escritura cambia un valor `from→to` en cualquier dirección + ignore list (e9k-style) |
 | `monitor rewind` | Rebobinar un frame (usa el rewind nativo de WinUAE) |
 
 ---
@@ -189,6 +190,33 @@ descompuestas la fuerza puede aplicarse sólo a la palabra interceptada.
 Para resultados predecibles, usar `size` igual al tamaño real de escritura
 del programa (normalmente `size=16` para `MOVE.W`/registros custom y
 `size=32` cuando el programa escribe longs como un todo).
+
+---
+
+## `monitor train`
+
+Estilo e9k: romper cuando una **escritura** cambia un valor de `from` a `to` en
+**cualquier dirección**. Útil para "entrenar" un cheat (p. ej. encontrar dónde
+cambia vidas de 3→2) sin saber la dirección.
+
+```
+monitor train <from> <to> [size=8|16|32]   # instala el watch any-address
+monitor train ignore                        # añade la última dirección disparada a la ignore list
+monitor train clear                         # vacía la ignore list
+monitor train                               # muestra la ignore list
+```
+
+- Instala un watchpoint con `any_addr` (casa cualquier dirección), `old=<from>`
+  y `val=<to>`: solo rompe si el valor anterior era `from` y el nuevo es `to`.
+- `train ignore` anade la dirección del último hit a una ignore-list; no vuelve
+  a romper ahí (se puede repetir para recorrer varias direcciones).
+- `train clear` vacía la ignore-list.
+
+Nota: para casar "cualquier dirección" el memwatch remapea el espacio completo
+de bancos RAM (límite `MEMWATCH_STORE_SLOTS`); solo se cubren los bancos que
+caben en los slots de memwatch.
+
+Verificación: `mcp-winuae-emu/scripts/verify-train.mjs` (5/5).
 
 ---
 
@@ -428,8 +456,13 @@ Estado del trabajo de traer features de
 **3. Timeline/rewind avanzado**: `loop` entre frames, `diff` de memoria entre
 dos frames, frame-step/reverse. (Hoy el restore congela; no hay "continuar".)
 
-**4. Comandos de consola**: `train` (transición de valor + ignore list, sobre la
-infraestructura de watch), `print` de expresiones DWARF, `base` explícito.
+**4. Comandos de consola**:
+- `train` (transición de valor + ignore list) — ✅ **hecho** (v2.2):
+  `monitor train <from> <to> [size]`, `train ignore`, `train clear`. Añade
+  `any_addr` + predicado `old` al núcleo de memwatch. Verificación:
+  `verify-train.mjs` (5/5) + sin regresión (baterías 7/7, 7/7, 19/19).
+- `print` de expresiones DWARF — pendiente.
+- `base` explícito — pendiente.
 
 **5. Automatización**: sampler profiler con hotspots (export web) y smoke test
 (grabar/reproducir escenarios comparando frames+audio).

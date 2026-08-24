@@ -218,8 +218,20 @@ struct memwatch_node {
 	bool nobreak;
 	bool reportonly;
 	int bus_error;
+	// e9k `train`: casar "cualquier direccion" + valor anterior exacto
+	int any_addr;
+	int oldval_enabled;
+	uae_u32 oldval;
 };
 extern struct memwatch_node mwnodes[MEMWATCH_TOTAL];
+
+// Ignore list para `train ignore`: direcciones que no vuelven a romper.
+#define MEMWATCH_IGNORE_MAX 32
+extern uae_u32 memwatch_ignore_addrs[MEMWATCH_IGNORE_MAX];
+extern int memwatch_ignore_count;
+extern bool memwatch_ignore_contains(uaecptr addr);
+extern bool memwatch_ignore_add(uaecptr addr);
+extern void memwatch_ignore_clear(void);
 
 extern void memwatch_dump2 (TCHAR *buf, int bufsize, int num);
 
