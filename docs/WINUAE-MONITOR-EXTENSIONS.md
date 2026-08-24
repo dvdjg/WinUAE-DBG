@@ -454,7 +454,17 @@ Estado del trabajo de traer features de
 - Verificación: `verify-debug-peripheral-ext.mjs` T7 (7/7 total).
 
 **3. Timeline/rewind avanzado**: `loop` entre frames, `diff` de memoria entre
-dos frames, frame-step/reverse. (Hoy el restore congela; no hay "continuar".)
+dos frames, frame-step/reverse. **BLOQUEADO** por limitaciones del rewind de
+WinUAE (verificado 2026-08):
+- `savestate_capture` no captura estados en flujo headless: la captura está
+  atada a la máquina de input-recording del GUI (`savestate_capture_request`
+  solo se llama al transitar a re-record; `inprec_open` no la llama) y
+  `savestate_capture` retorna si hay filesystems montados (`nr_units() > 0`).
+- El restore congela la emulación (documentado); no hay "continuar" tras rewind.
+- Prerequisito para desbloquear: (a) que `monitor rewind start` llame a
+  `savestate_capture_request` y fuerce la captura, (b) manejar el freeze del
+  restore (o leer memoria de los `staterecord` sin restaurar), (c) tolerar
+  filesystems montados. Es una sesión dedicada al subsistema de savestate.
 
 **4. Comandos de consola**:
 - `train` (transición de valor + ignore list) — ✅ **hecho** (v2.2):
