@@ -479,7 +479,11 @@ WinUAE (verificado 2026-08):
   muestrea el PC por canal lateral, resuelve el `.map` y emite el informe de
   hotspots (e9k-style). Ejemplo real en demo 101: `wait_vblank` ~29%,
   `rebuild_copper` ~28%, `memset` ~17%.
-- Smoke test (grabar/reproducir escenarios comparando frames+audio) — pendiente.
+- **Smoke test de determinismo** — ✅ **hecho** (host-side):
+  `Amiga-Cpp/tools/verify/verify-determinism.mjs` ejecuta la demo dos veces y
+  compara frames por cross-correlación (tolera el lag). Hallazgo: la demo 101
+  es determinista en frames tempranos pero no tras el primer upload de tiles
+  por Blitter (investigar).
 
 ### Nota operativa
 
