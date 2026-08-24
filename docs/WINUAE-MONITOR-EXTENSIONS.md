@@ -512,7 +512,11 @@ WinUAE (verificado 2026-08):
 - `base` (bases de sección para resolución de símbolos) — ✅ **hecho** (v2.2):
   `monitor base [text|data|bss <addr|clear>] | base clear`. Verificación:
   `verify-base.mjs` (3/3).
-- `print` de expresiones DWARF — pendiente.
+- `print` de valores (e9k-style) — ✅ **hecho** (v2.2): `monitor print <addr|*<addr>> [size]`
+  en el gdbserver + `winuae_print` (MCP) con resolución de símbolos via `.map`
+  (mapeo sección→hunk igual que run-demo). Verificación: `verify-print.mjs`
+  (5/5) + símbolo end-to-end.
+- Expresiones DWARF completas (`print expr` con structs/deref complejos) — pendiente.
 
 **5. Automatización**:
 - **Sampler profiler de hotspots** — ✅ **hecho** (host-side): `Amiga-Cpp/tools/profile/hotspots.mjs`
