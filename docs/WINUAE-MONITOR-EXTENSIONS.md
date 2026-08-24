@@ -514,9 +514,12 @@ WinUAE (verificado 2026-08):
   `verify-base.mjs` (3/3).
 - `print` de valores (e9k-style) — ✅ **hecho** (v2.2): `monitor print <addr|*<addr>> [size]`
   en el gdbserver + `winuae_print` (MCP) con resolución de símbolos via `.map`
-  (mapeo sección→hunk igual que run-demo). Verificación: `verify-print.mjs`
-  (5/5) + símbolo end-to-end.
-- Expresiones DWARF completas (`print expr` con structs/deref complejos) — pendiente.
+  y **campos simples de structs vía DWARF** del `.elf` (offset de miembros,
+  arrays `[N]`, deref). Lector DWARF propio (`src/dwarf.ts`, ELF big-endian
+  v4/v5). Verificación: `verify-print.mjs` (5/5) + resolución de
+  `g_game.m_scene.m_scroll_x` (offset 60).
+- Expresiones DWARF completas (`print expr` con structs/deref complejos, local
+  variables en registros) — pendiente.
 
 **5. Automatización**:
 - **Sampler profiler de hotspots** — ✅ **hecho** (host-side): `Amiga-Cpp/tools/profile/hotspots.mjs`
