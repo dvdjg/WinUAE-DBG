@@ -474,8 +474,12 @@ WinUAE (verificado 2026-08):
 - `print` de expresiones DWARF — pendiente.
 - `base` explícito — pendiente.
 
-**5. Automatización**: sampler profiler con hotspots (export web) y smoke test
-(grabar/reproducir escenarios comparando frames+audio).
+**5. Automatización**:
+- **Sampler profiler de hotspots** — ✅ **hecho** (host-side): `Amiga-Cpp/tools/profile/hotspots.mjs`
+  muestrea el PC por canal lateral, resuelve el `.map` y emite el informe de
+  hotspots (e9k-style). Ejemplo real en demo 101: `wait_vblank` ~29%,
+  `rebuild_copper` ~28%, `memset` ~17%.
+- Smoke test (grabar/reproducir escenarios comparando frames+audio) — pendiente.
 
 ### Nota operativa
 
