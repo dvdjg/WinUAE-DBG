@@ -294,6 +294,18 @@ namespace barto_gdbserver {
 	static uae_u32 dp_checkpoint_frames[64];
 	static uae_u32 dp_checkpoint_count[64];
 	static uae_u32 dp_checkpoint_desc[64];
+	// profiler de segmentos: el delta de ciclos desde el checkpoint anterior
+	// (cualquier slot) se atribuye al slot actual; scanline = vpos en el write.
+	static uae_u32 dp_checkpoint_seg_count[64];
+	static uae_u64 dp_checkpoint_seg_sum[64];
+	static uae_u32 dp_checkpoint_seg_min[64];
+	static uae_u32 dp_checkpoint_seg_max[64];
+	static uae_u32 dp_checkpoint_scan_count[64];
+	static uae_u32 dp_checkpoint_scan_sum[64];
+	static uae_u32 dp_checkpoint_scan_min[64];
+	static uae_u32 dp_checkpoint_scan_max[64];
+	static uae_u64 dp_checkpoint_last_cycles = 0;
+	static bool dp_checkpoint_have_last = false;
 	static uae_u32 dp_sec_base = 0, dp_sec_type = 0, dp_sec_size = 0;
 	static uae_u32 dp_counter_name[64];
 	static uae_u32 dp_counter_val[64];
@@ -437,12 +449,36 @@ namespace barto_gdbserver {
 		case DP_T_SMOKE: barto_log("DBGPERIPH: smoke/profile start request\n"); dp_start_profile_session(); break;
 		case DP_T_CHECKPOINT: {
 			const int slot = (int)(v & 63);
+			const uae_u64 ccycles = get_cycles() / cpucycleunit;
+			const uae_u32 scan = vpos > 0 ? (uae_u32)vpos : 0;
+			uae_u32 seg_delta = 0;
 			dp_checkpoint_slot = (uae_u32)slot;
-			dp_checkpoint_cycles[slot] = (uae_u32)(get_cycles() / cpucycleunit);
+			dp_checkpoint_cycles[slot] = (uae_u32)ccycles;
 			dp_checkpoint_frames[slot] = (uae_u32)vsync_counter;
 			dp_checkpoint_count[slot]++;
+			// segmento: delta desde el checkpoint anterior (cualquier slot)
+			if(dp_checkpoint_have_last) {
+				seg_delta = (uae_u32)(ccycles >= dp_checkpoint_last_cycles ? ccycles - dp_checkpoint_last_cycles : 0);
+				dp_checkpoint_seg_count[slot]++;
+				dp_checkpoint_seg_sum[slot] += seg_delta;
+				if(dp_checkpoint_seg_count[slot] == 1 || seg_delta < dp_checkpoint_seg_min[slot])
+					dp_checkpoint_seg_min[slot] = seg_delta;
+				if(seg_delta > dp_checkpoint_seg_max[slot])
+					dp_checkpoint_seg_max[slot] = seg_delta;
+			} else {
+				dp_checkpoint_have_last = true;
+			}
+			dp_checkpoint_last_cycles = ccycles;
+			// scanline del write (vpos)
+			dp_checkpoint_scan_count[slot]++;
+			dp_checkpoint_scan_sum[slot] += scan;
+			if(dp_checkpoint_scan_count[slot] == 1 || scan < dp_checkpoint_scan_min[slot])
+				dp_checkpoint_scan_min[slot] = scan;
+			if(scan > dp_checkpoint_scan_max[slot])
+				dp_checkpoint_scan_max[slot] = scan;
 			if(g_trace)
-				barto_log("DBGPERIPH: checkpoint %d cycles=%u frame=%u\n", slot, dp_checkpoint_cycles[slot], dp_checkpoint_frames[slot]);
+				barto_log("DBGPERIPH: checkpoint %d cycles=%u frame=%u seg=%u scan=%u\n", slot,
+					(unsigned)dp_checkpoint_cycles[slot], (unsigned)dp_checkpoint_frames[slot], (unsigned)seg_delta, (unsigned)scan);
 			break;
 		}
 		}
@@ -607,23 +643,53 @@ namespace barto_gdbserver {
 			dp_console_flush();
 			return "OK flushed";
 		}
+		if(rest == "checkpoints reset") {
+			for(int i = 0; i < 64; i++) {
+				dp_checkpoint_cycles[i] = 0;
+				dp_checkpoint_frames[i] = 0;
+				dp_checkpoint_count[i] = 0;
+				dp_checkpoint_desc[i] = 0;
+				dp_checkpoint_seg_count[i] = 0;
+				dp_checkpoint_seg_sum[i] = 0;
+				dp_checkpoint_seg_min[i] = 0;
+				dp_checkpoint_seg_max[i] = 0;
+				dp_checkpoint_scan_count[i] = 0;
+				dp_checkpoint_scan_sum[i] = 0;
+				dp_checkpoint_scan_min[i] = 0;
+				dp_checkpoint_scan_max[i] = 0;
+			}
+			dp_checkpoint_have_last = false;
+			dp_checkpoint_last_cycles = 0;
+			return "OK checkpoints reset";
+		}
 		if(rest == "checkpoints") {
 			std::string out;
-			char line[160];
+			char line[240];
 			for(int i = 0; i < 64; i++) {
 				if(dp_checkpoint_count[i]) {
+					const uae_u32 sc = dp_checkpoint_seg_count[i];
+					const uae_u64 avg = sc ? dp_checkpoint_seg_sum[i] / sc : 0;
+					const uae_u32 scan_avg = dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_sum[i] / dp_checkpoint_scan_count[i] : 0;
 					if(dp_checkpoint_desc[i]) {
 						std::string desc;
 						dp_read_cstring(dp_checkpoint_desc[i], desc);
 						if(desc.empty())
-							snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u desc_ptr=0x%08x\n",
-								i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i], (unsigned)dp_checkpoint_desc[i]);
+							snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u seg_avg=%llu seg_min=%u seg_max=%u scan_avg=%u scan_min=%u scan_max=%u desc_ptr=0x%08x\n",
+								i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i],
+								(unsigned long long)avg, sc ? dp_checkpoint_seg_min[i] : 0, sc ? dp_checkpoint_seg_max[i] : 0,
+								scan_avg, dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_min[i] : 0, dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_max[i] : 0,
+								(unsigned)dp_checkpoint_desc[i]);
 						else
-							snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u desc=\"%s\"\n",
-								i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i], desc.c_str());
+							snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u seg_avg=%llu seg_min=%u seg_max=%u scan_avg=%u scan_min=%u scan_max=%u desc=\"%s\"\n",
+								i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i],
+								(unsigned long long)avg, sc ? dp_checkpoint_seg_min[i] : 0, sc ? dp_checkpoint_seg_max[i] : 0,
+								scan_avg, dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_min[i] : 0, dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_max[i] : 0,
+								desc.c_str());
 					} else {
-						snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u\n",
-							i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i]);
+						snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u seg_avg=%llu seg_min=%u seg_max=%u scan_avg=%u scan_min=%u scan_max=%u\n",
+							i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i],
+							(unsigned long long)avg, sc ? dp_checkpoint_seg_min[i] : 0, sc ? dp_checkpoint_seg_max[i] : 0,
+							scan_avg, dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_min[i] : 0, dp_checkpoint_scan_count[i] ? dp_checkpoint_scan_max[i] : 0);
 					}
 					out += line;
 				}

@@ -298,10 +298,17 @@ automáticamente al primer `vsync_pre` cuando el gdbserver está activo.
 monitor debugperiph                    # estado: mapped/base/console/args/checkpoints/counters
 monitor debugperiph arg <n> <valor>    # fija el debug arg n (0-9)
 monitor debugperiph console            # devuelve el buffer de consola pendiente
-monitor debugperiph checkpoints        # vuelca los checkpoints (con descripcion si se fijo)
+monitor debugperiph checkpoints        # vuelca los checkpoints (stats + descripcion)
+monitor debugperiph checkpoints reset  # limpia todos los checkpoints/stats
 monitor debugperiph counters           # vuelca contadores nombre/valor
 monitor debugperiph flush              # flushea la consola
 ```
+
+`checkpoints` muestra por slot: `cycles`, `frame`, `count` y el **profiler de
+segmentos** `seg_avg/seg_min/seg_max` (delta de ciclos desde el checkpoint
+anterior, atribuido al slot actual) y `scan_avg/scan_min/scan_max` (scanline
+`vpos` en cada write). Es el patrón e9k para medir el coste de un tramo:
+`checkpoint(10)` antes, `checkpoint(11)` después → `seg` de slot 11 = coste.
 
 ### Mapa de registros completo (base 0xB70000)
 
@@ -412,8 +419,11 @@ Estado del trabajo de traer features de
 - `+0x28` cualquier write → solicitar smoke test / profiling (hook; orquesta el host). ✅
 - Verificación: `verify-debug-peripheral-ext.mjs` (6/6) + sin regresión en la batería original (7/7).
 
-**2. Checkpoint profiler de e9k**: stats `avg/min/max` por checkpoint + scanline
-(de momento sólo ciclos+frame+count).
+**2. Checkpoint profiler de e9k** — ✅ **hecho** (v2.2):
+- Stats `seg_avg/seg_min/seg_max` por checkpoint (delta de ciclos desde el
+  checkpoint anterior) + `scan_avg/scan_min/scan_max` (scanline `vpos`).
+- `debugperiph checkpoints reset` limpia todos los checkpoints/stats.
+- Verificación: `verify-debug-peripheral-ext.mjs` T7 (7/7 total).
 
 **3. Timeline/rewind avanzado**: `loop` entre frames, `diff` de memoria entre
 dos frames, frame-step/reverse. (Hoy el restore congela; no hay "continuar".)
