@@ -34,6 +34,7 @@ Guía "cuándo usar" completa para la IA:
 | `monitor protect` | Protect/cheat: bloquear escrituras o forzar valores |
 | `monitor train` | Romper cuando una escritura cambia un valor `from→to` en cualquier dirección + ignore list (e9k-style) |
 | `monitor base` | Consultar/fijar las bases runtime de sección (text/data/bss) para resolución de símbolos (e9k-style) |
+| `monitor print` | Leer y formatear un valor en memoria (addr / deref `*`) — e9k-style |
 | `monitor rewind` | Rebobinar un frame (usa el rewind nativo de WinUAE) |
 
 ---
@@ -236,6 +237,24 @@ monitor base clear                 # limpia todas
 Útil cuando el programa emulado informa sus secciones (p. ej. por el periférico
 `0xB70014/18/1C`) o para corregir la resolución de símbolos de un binario
 relocalizado. Verificación: `mcp-winuae-emu/scripts/verify-base.mjs` (3/3).
+
+---
+
+## `monitor print`
+
+Estilo e9k: leer y formatear un valor en memoria emulada.
+
+```
+monitor print <addr> [size=8|16|32]   # valor en addr
+monitor print *<addr> [size=8|16|32]  # deref: val es puntero, se lee el valor apuntado
+```
+
+La resolución de símbolos (nombre → dirección runtime) la hace el host:
+`winuae_print` (MCP) acepta un símbolo + el `.map` de la demo y resuelve con el
+mismo mapeo por índice sección→hunk que usa `run-demo`.
+
+Verificación: `mcp-winuae-emu/scripts/verify-print.mjs` (5/5) + resolución de
+símbolo end-to-end (g_eng_run_status → magic `ENGR`).
 
 ---
 

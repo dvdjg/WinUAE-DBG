@@ -3077,11 +3077,15 @@ namespace barto_gdbserver {
 		if(tokens.empty()) {
 			std::string out;
 			char line[192];
+			// alias text/data/bss (primeras 3) + el vector completo de hunks
 			for(int i = 0; i < 3; i++) {
 				snprintf(line, sizeof(line), "%s=0x%08x\n", names[i], (unsigned)sect(i));
 				out += line;
 			}
-			// fallo de resolución: la seccion no esta en `sections` o es 0
+			for(int i = 0; i < (int)sections.size(); i++) {
+				snprintf(line, sizeof(line), "sec%d=0x%08x\n", i, (unsigned)sections[i]);
+				out += line;
+			}
 			if(sect(0) == 0) out += "(sin bases; usa: monitor base text|data|bss 0x...)\n";
 			return out;
 		}
@@ -3103,6 +3107,50 @@ namespace barto_gdbserver {
 		char out[128];
 		snprintf(out, sizeof(out), "OK %s base = 0x%08x", names[idx], (unsigned)v);
 		return out;
+	}
+
+	// e9k `print`: leer y formatear un valor en memoria.
+	// sintaxis: monitor print <addr> [size=8|16|32] | monitor print *<addr> [size]
+	// (el `*` hace dereference: val es el puntero, se lee el valor apuntado).
+	// La resolucion de simbolos a direccion la hace el host (winuae_print via .map).
+	static std::string monitor_print_command(const std::string& cmd) {
+		std::string rest = cmd.substr(5); // strip "print"
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+		auto tokens = tokenize_monitor(rest);
+		if(tokens.empty())
+			return "E01 usage: print <addr> [size=8|16|32] | print *<addr> [size]";
+		int size = 4;
+		for(size_t i = 1; i < tokens.size(); i++) {
+			if(tokens[i].substr(0, 5) == "size=") {
+				int b = atoi(tokens[i].c_str() + 5);
+				size = (b == 8) ? 1 : (b == 16) ? 2 : 4;
+			}
+		}
+		std::string expr = tokens[0];
+		bool deref = false;
+		if(!expr.empty() && expr[0] == '*') { deref = true; expr = expr.substr(1); }
+		uaecptr addr = (uaecptr)strtoul(expr.c_str(), nullptr, 0);
+
+		auto readVal = [](uaecptr a, int sz, uae_u32& out) -> bool {
+			if(sz == 1) { out = get_byte_debug(a); return true; }
+			if(sz == 2) { out = get_word_debug(a); return true; }
+			out = get_long_debug(a); return true;
+		};
+
+		uae_u32 val = 0;
+		if(!readVal(addr, size, val))
+			return "E01 memory not readable";
+		if(deref) {
+			uaecptr ptr = (uaecptr)val;
+			if(!readVal(ptr, size, val))
+				return "E01 deref not readable";
+			char line[256];
+			snprintf(line, sizeof(line), "*0x%08x -> 0x%08x (size=%d) value=0x%08x (%u)", (unsigned)addr, (unsigned)ptr, size, val, val);
+			return line;
+		}
+		char line[256];
+		snprintf(line, sizeof(line), "addr=0x%08x size=%d value=0x%08x (%u)", (unsigned)addr, size, val, val);
+		return line;
 	}
 
 	static std::string monitor_status_command() {
@@ -3753,6 +3801,10 @@ namespace barto_gdbserver {
 									// e9k-style section bases for symbol resolution.
 									// syntax: monitor base | base text|data|bss <addr|clear> | base clear
 									response += to_hex(monitor_base_command(cmd));
+								} else if(cmd == "print" || cmd.substr(0, strlen("print ")) == "print ") {
+									// e9k-style print: read and format a value at an address (or deref).
+									// syntax: monitor print <addr> [size=8|16|32] | monitor print *<addr> [size]
+									response += to_hex(monitor_print_command(cmd));
 								} else if(cmd == "rewind" || cmd.substr(0, strlen("rewind ")) == "rewind ") {
 									// syntax: monitor rewind  (rewinds one frame; takes effect on next continue)
 									response += to_hex(monitor_rewind_command(cmd));
