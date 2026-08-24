@@ -255,7 +255,17 @@ namespace barto_gdbserver {
 	//   0xB70020  long write  -> slot de checkpoint (0-63)
 	//   0xB7E900..B7E924  long read  -> debug args 0-9 (monitor debugperiph arg)
 	//   0xB7E928  long read  -> contador de ciclos de CPU
+	//   0xB70014/18/1C long write -> commit de seccion (base/type/size; 0=text,1=data,2=bss)
+	//   0xB70024  long write -> escribir 0xDEAD sale del debugger
+	//   0xB70028  long write -> cualquier write arranca smoke test / profiling
+	//   0xB70100  long write -> checkpoint description_ptr (uint32_t[64], index*4)
+	//   0xB70200  long write -> counter name_ptr (uint32_t[64], index*4)
+	//   0xB70300  long write -> counter value (uint32_t[64], index*4)
 	// ------------------------------------------------------------------
+	// gdb_try_read_byte se define más abajo; el periférico la usa para resolver
+	// punteros a strings del programa emulado (descripciones / nombres de contador).
+	static bool gdb_try_read_byte(uaecptr adr, uae_u8& value);
+
 	static constexpr uaecptr DP_BASE = 0xb70000;
 	static constexpr int DP_BANK = DP_BASE >> 16;
 	static constexpr uaecptr DP_CONSOLE = 0x0000;
@@ -263,7 +273,16 @@ namespace barto_gdbserver {
 	static constexpr uaecptr DP_TEXT = 0x0008;
 	static constexpr uaecptr DP_DATA = 0x000C;
 	static constexpr uaecptr DP_BSS = 0x0010;
+	static constexpr uaecptr DP_SEC_BASE = 0x0014;
+	static constexpr uaecptr DP_SEC_TYPE = 0x0018;
+	static constexpr uaecptr DP_SEC_SIZE = 0x001C;
 	static constexpr uaecptr DP_CHECKPOINT = 0x0020;
+	static constexpr uaecptr DP_DEAD = 0x0024;
+	static constexpr uaecptr DP_SMOKE = 0x0028;
+	static constexpr uaecptr DP_CP_DESC = 0x0100;
+	static constexpr uaecptr DP_CNT_NAME = 0x0200;
+	static constexpr uaecptr DP_CNT_VAL = 0x0300;
+	static constexpr uaecptr DP_ARRAY_END = 0x0400;
 	static constexpr uaecptr DP_ARGS = 0xE900;
 	static constexpr uaecptr DP_CYCLES = 0xE928;
 
@@ -274,7 +293,12 @@ namespace barto_gdbserver {
 	static uae_u32 dp_checkpoint_cycles[64];
 	static uae_u32 dp_checkpoint_frames[64];
 	static uae_u32 dp_checkpoint_count[64];
-	enum { DP_T_BREAK = 0, DP_T_TEXT, DP_T_DATA, DP_T_BSS, DP_T_CHECKPOINT, DP_T_TOTAL };
+	static uae_u32 dp_checkpoint_desc[64];
+	static uae_u32 dp_sec_base = 0, dp_sec_type = 0, dp_sec_size = 0;
+	static uae_u32 dp_counter_name[64];
+	static uae_u32 dp_counter_val[64];
+	static uae_u32 dp_array[(DP_ARRAY_END - DP_CP_DESC) / 4];
+	enum { DP_T_BREAK = 0, DP_T_TEXT, DP_T_DATA, DP_T_BSS, DP_T_CHECKPOINT, DP_T_SEC_BASE, DP_T_SEC_TYPE, DP_T_SEC_SIZE, DP_T_DEAD, DP_T_SMOKE, DP_T_TOTAL };
 	static uae_u32 dp_target_value[DP_T_TOTAL];
 	static bool dp_target_dirty[DP_T_TOTAL];
 	static bool dp_mapped = false;
@@ -299,8 +323,77 @@ namespace barto_gdbserver {
 		case DP_DATA: return DP_T_DATA;
 		case DP_BSS: return DP_T_BSS;
 		case DP_CHECKPOINT: return DP_T_CHECKPOINT;
+		case DP_SEC_BASE: return DP_T_SEC_BASE;
+		case DP_SEC_TYPE: return DP_T_SEC_TYPE;
+		case DP_SEC_SIZE: return DP_T_SEC_SIZE;
+		case DP_DEAD: return DP_T_DEAD;
+		case DP_SMOKE: return DP_T_SMOKE;
 		}
 		return -1;
+	}
+
+	// Indice del array (0..191) para offsets en [0x100, 0x400), o -1.
+	static int dp_array_index(uae_u32 off) {
+		if(off >= DP_CP_DESC && off < DP_ARRAY_END)
+			return (int)((off - DP_CP_DESC) >> 2);
+		return -1;
+	}
+
+	static void dp_commit_section() {
+		switch(dp_sec_type & 3u) {
+		case 0: dp_text_base = dp_sec_base; break;
+		case 1: dp_data_base = dp_sec_base; break;
+		case 2: dp_bss_base = dp_sec_base; break;
+		default: barto_log("DBGPERIPH: seccion commit con tipo %u ignorado\n", dp_sec_type & 3u); return;
+		}
+		barto_log("DBGPERIPH: seccion %s base=0x%08x size=0x%08x (commit)\n",
+			(dp_sec_type & 3u) == 0 ? ".text" : (dp_sec_type & 3u) == 1 ? ".data" : ".bss",
+			(unsigned)dp_sec_base, (unsigned)dp_sec_size);
+	}
+
+	static void dp_exit_debugger() {
+		uaecptr pc = munge24(m68k_getpc());
+		barto_log("DBGPERIPH: 0xDEAD -> saliendo del debugger (break en 0x%08x)\n", (unsigned)pc);
+		bool ok = false;
+		for(int i = 0; i < BREAKPOINT_TOTAL; i++) {
+			auto& bpn = bpnodes[i];
+			if(bpn.enabled)
+				continue;
+			bpn.value1 = pc;
+			bpn.value2 = 0;
+			bpn.mask = 0xffffffff;
+			bpn.type = BREAKPOINT_REG_PC;
+			bpn.oper = BREAKPOINT_CMP_EQUAL;
+			bpn.opersigned = false;
+			bpn.cnt = 0;
+			bpn.chain = -1;
+			bpn.enabled = 1;
+			trace_mode = TRACE_CHECKONLY;
+			ok = true;
+			break;
+		}
+		if(!ok)
+			barto_log("DBGPERIPH: sin slot libre para 0xDEAD break\n");
+	}
+
+	static void dp_start_profile_session() {
+		// Hook del periférico (0xB70028): el programa emulado pide arrancar una
+		// sesión de smoke test / profiling. El arranque real de la sesión lo
+		// orquesta el host (monitor profile / canal lateral "profile"), así que
+		// aquí solo se registra el evento para que la IA lo correlacione.
+		barto_log("DBGPERIPH: smoke/profile start requested (host: monitor profile / side channel profile)\n");
+	}
+
+	static void dp_commit_array(int idx) {
+		if(idx < 0 || idx >= (int)((DP_ARRAY_END - DP_CP_DESC) / 4))
+			return;
+		const uae_u32 v = dp_array[idx];
+		if(idx < 64)
+			dp_checkpoint_desc[idx] = v;
+		else if(idx < 128)
+			dp_counter_name[idx - 64] = v;
+		else
+			dp_counter_val[idx - 128] = v;
 	}
 
 	static void dp_handle_long_target(int t) {
@@ -337,6 +430,11 @@ namespace barto_gdbserver {
 		case DP_T_TEXT: dp_text_base = v; barto_log("DBGPERIPH: .text base=0x%08x\n", v); break;
 		case DP_T_DATA: dp_data_base = v; barto_log("DBGPERIPH: .data base=0x%08x\n", v); break;
 		case DP_T_BSS:  dp_bss_base = v;  barto_log("DBGPERIPH: .bss base=0x%08x\n", v); break;
+		case DP_T_SEC_BASE: dp_sec_base = v; break;
+		case DP_T_SEC_TYPE: dp_sec_type = v; break;
+		case DP_T_SEC_SIZE: dp_sec_size = v; dp_commit_section(); break;
+		case DP_T_DEAD: if(v == 0xDEADu) dp_exit_debugger(); else barto_log("DBGPERIPH: 0x%08x != 0xDEAD (ignorado)\n", v); break;
+		case DP_T_SMOKE: barto_log("DBGPERIPH: smoke/profile start request\n"); dp_start_profile_session(); break;
 		case DP_T_CHECKPOINT: {
 			const int slot = (int)(v & 63);
 			dp_checkpoint_slot = (uae_u32)slot;
@@ -352,6 +450,17 @@ namespace barto_gdbserver {
 
 	static void dp_write_byte(uae_u32 off, uae_u8 b) {
 		if(off == DP_CONSOLE) { dp_console_char(b); return; }
+		const int ai = dp_array_index(off);
+		if(ai >= 0) {
+			const int byte_idx = (int)(off & 3);
+			uae_u32 v = dp_array[ai];
+			v &= ~(0xffu << (8 * (3 - byte_idx)));
+			v |= (uae_u32)b << (8 * (3 - byte_idx));
+			dp_array[ai] = v;
+			if(byte_idx == 3)
+				dp_commit_array(ai);
+			return;
+		}
 		const int t = dp_target_of(off);
 		if(t < 0)
 			return;
@@ -365,6 +474,16 @@ namespace barto_gdbserver {
 			dp_handle_long_target(t);
 	}
 	static void dp_write_word(uae_u32 off, uae_u16 v) {
+		const int ai = dp_array_index(off);
+		if(ai >= 0) {
+			if((off & 3) == 0) {
+				dp_array[ai] = (uae_u32)v << 16;
+			} else {
+				dp_array[ai] |= v;
+				dp_commit_array(ai);
+			}
+			return;
+		}
 		const int t = dp_target_of(off);
 		if(t >= 0) {
 			if((off & 3) == 0) {
@@ -382,6 +501,12 @@ namespace barto_gdbserver {
 		}
 	}
 	static void dp_write_long(uae_u32 off, uae_u32 v) {
+		const int ai = dp_array_index(off);
+		if(ai >= 0) {
+			dp_array[ai] = v;
+			dp_commit_array(ai);
+			return;
+		}
 		const int t = dp_target_of(off);
 		if(t >= 0) {
 			dp_target_value[t] = v;
@@ -401,6 +526,22 @@ namespace barto_gdbserver {
 		if(off == DP_CYCLES)
 			return (uae_u32)(get_cycles() / cpucycleunit);
 		return 0xffffffff;
+	}
+
+	// Lee una cadena terminada en NUL desde la memoria del programa emulado
+	// (para resolver description_ptr / name_ptr del periférico).
+	static void dp_read_cstring(uae_u32 addr, std::string& out, size_t maxlen = 96) {
+		if(addr == 0)
+			return;
+		out.clear();
+		for(size_t i = 0; i < maxlen; i++) {
+			uae_u8 b = 0;
+			if(!gdb_try_read_byte(addr + (uaecptr)i, b))
+				break;
+			if(b == 0)
+				break;
+			out += (char)b;
+		}
 	}
 
 	static uae_u32 REGPARAM2 dp_lget(uaecptr addr) { return dp_read32(addr & 0xffff); }
@@ -468,15 +609,46 @@ namespace barto_gdbserver {
 		}
 		if(rest == "checkpoints") {
 			std::string out;
-			char line[128];
+			char line[160];
 			for(int i = 0; i < 64; i++) {
 				if(dp_checkpoint_count[i]) {
-					snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u\n",
-						i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i]);
+					if(dp_checkpoint_desc[i]) {
+						std::string desc;
+						dp_read_cstring(dp_checkpoint_desc[i], desc);
+						if(desc.empty())
+							snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u desc_ptr=0x%08x\n",
+								i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i], (unsigned)dp_checkpoint_desc[i]);
+						else
+							snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u desc=\"%s\"\n",
+								i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i], desc.c_str());
+					} else {
+						snprintf(line, sizeof(line), "[%d] cycles=0x%08x frame=%u count=%u\n",
+							i, dp_checkpoint_cycles[i], dp_checkpoint_frames[i], dp_checkpoint_count[i]);
+					}
 					out += line;
 				}
 			}
 			return out.empty() ? "no checkpoints" : out;
+		}
+		if(rest == "counters") {
+			std::string out;
+			char line[160];
+			for(int i = 0; i < 64; i++) {
+				if(dp_counter_name[i] || dp_counter_val[i]) {
+					if(dp_counter_name[i]) {
+						std::string name;
+						dp_read_cstring(dp_counter_name[i], name);
+						if(name.empty())
+							snprintf(line, sizeof(line), "[%d] value=%u name_ptr=0x%08x\n", i, dp_counter_val[i], (unsigned)dp_counter_name[i]);
+						else
+							snprintf(line, sizeof(line), "[%d] value=%u name=\"%s\"\n", i, dp_counter_val[i], name.c_str());
+					} else {
+						snprintf(line, sizeof(line), "[%d] value=%u\n", i, dp_counter_val[i]);
+					}
+					out += line;
+				}
+			}
+			return out.empty() ? "no counters" : out;
 		}
 		// status
 		std::string out;
@@ -495,6 +667,16 @@ namespace barto_gdbserver {
 		}
 		out += "\n";
 		snprintf(line, sizeof(line), "checkpoint_slot=%u\n", dp_checkpoint_slot);
+		out += line;
+		int cp_used = 0;
+		for(int i = 0; i < 64; i++)
+			if(dp_checkpoint_count[i])
+				cp_used++;
+		int cnt_used = 0;
+		for(int i = 0; i < 64; i++)
+			if(dp_counter_name[i] || dp_counter_val[i])
+				cnt_used++;
+		snprintf(line, sizeof(line), "checkpoints_used=%d counters_used=%d\n", cp_used, cnt_used);
 		out += line;
 		return out;
 	}

@@ -295,12 +295,33 @@ automáticamente al primer `vsync_pre` cuando el gdbserver está activo.
 ### `monitor debugperiph` — subcomandos
 
 ```
-monitor debugperiph                    # estado: mapped/base/console/args/checkpoints
+monitor debugperiph                    # estado: mapped/base/console/args/checkpoints/counters
 monitor debugperiph arg <n> <valor>    # fija el debug arg n (0-9)
 monitor debugperiph console            # devuelve el buffer de consola pendiente
-monitor debugperiph checkpoints        # vuelca los checkpoints registrados
+monitor debugperiph checkpoints        # vuelca los checkpoints (con descripcion si se fijo)
+monitor debugperiph counters           # vuelca contadores nombre/valor
 monitor debugperiph flush              # flushea la consola
 ```
+
+### Mapa de registros completo (base 0xB70000)
+
+| Offset | Acceso | Uso |
+|---|---|---|
+| `+0x00` | write byte | carácter a consola (flushea con 0/`\n`/`\r`) |
+| `+0x04` | write long | breakpoint en esa dirección |
+| `+0x08`/`0C`/`10` | write long | bases `.text/.data/.bss` |
+| `+0x14`/`18`/`1C` | write long | **commit de sección**: base / type (`0`=text,`1`=data,`2`=bss) / size |
+| `+0x20` | write long | slot de checkpoint (0-63); registra ciclos+frame |
+| `+0x24` | write long | escribir `0xDEAD` sale del debugger (break en el PC actual) |
+| `+0x28` | write long | cualquier write → solicita smoke/profiling (hook; orquesta el host) |
+| `+0x100` | write long | **descripción de checkpoint** (`uint32_t[64]`; `description_ptr` en `+0x100 + slot*4`) |
+| `+0x200` | write long | **nombre de contador** (`uint32_t[64]`; `name_ptr` en `+0x200 + slot*4`) |
+| `+0x300` | write long | **valor de contador** (`uint32_t[64]`; en `+0x300 + slot*4`) |
+| `0xB7E900..E924` | read long | debug args 0-9 |
+| `0xB7E928` | read long | contador de ciclos de CPU |
+
+Las descripciones y nombres son punteros a strings NUL en la memoria del
+programa; `debugperiph checkpoints`/`counters` los resuelven leyendo esa memoria.
 
 ### Ejemplo (programa 68k bare-metal)
 
@@ -309,15 +330,27 @@ monitor debugperiph flush              # flushea la consola
         MOVE.B  D0,(0xB70000).L            ; carácter a consola
         MOVE.L  #$20000,(0xB70004).L       ; breakpoint en 0x20000
         MOVE.L  (0xB7E928).L,D0            ; leer ciclos de CPU
+        ; commit de sección .text (base 0xC000, type 0, size 0x1000)
+        MOVE.L  #$C000,(0xB70014).L
+        MOVE.L  #0,(0xB70018).L
+        MOVE.L  #$1000,(0xB7001C).L
+        ; descripción del checkpoint 2
+        MOVE.L  #label,(0xB70108).L        ; +0x100 + 2*4
+        MOVE.L  #2,(0xB70020).L            ; dispara el checkpoint
+        ; contador "uploads" = 3
+        MOVE.L  #name,(0xB70200).L
+        MOVE.L  #3,(0xB70300).L
 ```
 
 ### Verificación
 
 `mcp-winuae-emu/scripts/verify-debug-peripheral.mjs` (7/7): mapeo, consola,
 contador de ciclos, debug args, checkpoint, breakpoint vía periférico y flujo
-end-to-end. `verify-visual-copper.mjs` confirma con ollama local (qwen3-vl)
-que la renderización sigue funcionando tras mapear el periférico (pantalla
-magenta del cobre).
+end-to-end. `mcp-winuae-emu/scripts/verify-debug-peripheral-ext.mjs` (6/6):
+commit de secciones, descripción de checkpoint, contadores, `0xDEAD` y hook de
+smoke. `verify-visual-copper.mjs` confirma con ollama local (qwen3-vl) que la
+renderización sigue funcionando tras mapear el periférico (pantalla magenta del
+cobre).
 
 ---
 
@@ -347,6 +380,54 @@ TRACE rewind scheduled frame=2011
 valida el emulador (watchpoints que se disparan, protects aplicados, rewinds).
 El log captura también cada comando `monitor` recibido, los handshakes GDB y
 los avisos de depuración.
+
+---
+
+## Roadmap del port desde engine9000
+
+Estado del trabajo de traer features de
+[engine9000](https://github.com/alpine9000/engine9000-public) a WinUAE-DBG.
+
+### Hecho (v2.1, verificado)
+
+- `monitor status` (telemetría: ciclos, frame, vpos/hpos, warp, baseText, nº de bp/wp/protects).
+- `monitor watch` (predicados `val/mask/old/diff`, size 8/16/32, `src=` de origen, list/del/clear/last).
+- `monitor protect` (`block` / `set=valor`).
+- `monitor rewind` (`start`/`stop`/`status`; restore arreglado, congela la emulación — sólo inspección por canal lateral).
+- `monitor trace` (eventos de watch/protect/rewind → `%TEMP%\winuae-gdb.log`).
+- **Amiga Debug Peripherals** parcial (base `0xB70000`; e9k usa `0xFC0000`):
+  consola (`+0x00`), breakpoint (`+0x04`), bases `.text/.data/.bss` (`+0x08/0C/10`),
+  checkpoint (`+0x20`), debug args (`0xB7E900..E924`), ciclos (`0xB7E928`).
+- MCP tools (`winuae_*`) + canal lateral (2346) + baterías de verificación + docs.
+- Uso real del periférico en la demo `101_ehb_tile_scroll_driver`
+  (`engine/include/eng/debug/peripheral.hpp`, checkpoints 0/10/11, `TILE_CHANGE`).
+
+### Pendiente (priorizado, para hilos nuevos)
+
+**1. Periférico Amiga completo (1:1 con e9k)** — ✅ **hecho** (v2.2):
+- Commitar secciones: `+0x14` base, `+0x18` type (0=text,1=data,2=bss), `+0x1C` size. ✅
+- Descripciones de checkpoint: `+0x100` (`uint32_t[64]`, `description_ptr` por slot). ✅
+- Contadores con nombre/valor: `+0x200` names (`uint32_t[64]`) y `+0x300` values (`uint32_t[64]`). ✅
+- `+0x24` escribir `0xDEAD` → salir del debugger. ✅
+- `+0x28` cualquier write → solicitar smoke test / profiling (hook; orquesta el host). ✅
+- Verificación: `verify-debug-peripheral-ext.mjs` (6/6) + sin regresión en la batería original (7/7).
+
+**2. Checkpoint profiler de e9k**: stats `avg/min/max` por checkpoint + scanline
+(de momento sólo ciclos+frame+count).
+
+**3. Timeline/rewind avanzado**: `loop` entre frames, `diff` de memoria entre
+dos frames, frame-step/reverse. (Hoy el restore congela; no hay "continuar".)
+
+**4. Comandos de consola**: `train` (transición de valor + ignore list, sobre la
+infraestructura de watch), `print` de expresiones DWARF, `base` explícito.
+
+**5. Automatización**: sampler profiler con hotspots (export web) y smoke test
+(grabar/reproducir escenarios comparando frames+audio).
+
+### Nota operativa
+
+- Usar siempre el build **x86** (`winuae-gdb.exe`); el x64 tiene un bug de boot
+  congelado preexistente (ver "Nota sobre el build x64" abajo).
 
 ---
 
