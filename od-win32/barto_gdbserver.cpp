@@ -3056,6 +3056,55 @@ namespace barto_gdbserver {
 		return "E01 no rewind state available";
 	}
 
+	// e9k `base`: consultar / fijar las bases runtime de seccion (text/data/bss)
+	// usadas para resolver simbolos (debug_addr = runtime_addr - base).
+	// sintaxis: monitor base | base text|data|bss <addr|clear> | base clear
+	static std::string monitor_base_command(const std::string& cmd) {
+		std::string rest = cmd.substr(4); // strip "base"
+		while(!rest.empty() && rest[0] == ' ') rest = rest.substr(1);
+		auto tokens = tokenize_monitor(rest);
+
+		const char* names[3] = { "text", "data", "bss" };
+		auto sect = [&](int idx) -> uaecptr {
+			return (idx >= 0 && idx < (int)sections.size()) ? sections[idx] : 0;
+		};
+		auto setSect = [&](int idx, uaecptr v) {
+			while((int)sections.size() <= idx) sections.push_back(0);
+			sections[idx] = v;
+			if(idx == 0) baseText = (uint32_t)v;
+		};
+
+		if(tokens.empty()) {
+			std::string out;
+			char line[192];
+			for(int i = 0; i < 3; i++) {
+				snprintf(line, sizeof(line), "%s=0x%08x\n", names[i], (unsigned)sect(i));
+				out += line;
+			}
+			// fallo de resolución: la seccion no esta en `sections` o es 0
+			if(sect(0) == 0) out += "(sin bases; usa: monitor base text|data|bss 0x...)\n";
+			return out;
+		}
+		if(tokens[0] == "clear") {
+			for(int i = 0; i < 3 && i < (int)sections.size(); i++) sections[i] = 0;
+			baseText = 0;
+			return "OK bases cleared";
+		}
+		int idx = -1;
+		for(int i = 0; i < 3; i++) if(tokens[0] == names[i]) idx = i;
+		if(idx < 0) return "E01 seccion debe ser text|data|bss";
+		if(tokens.size() < 2) return "E01 usage: base " + std::string(names[idx]) + " <addr|clear>";
+		if(tokens[1] == "clear") {
+			setSect(idx, 0);
+			return "OK " + std::string(names[idx]) + " cleared";
+		}
+		uaecptr v = (uaecptr)strtoul(tokens[1].c_str(), nullptr, 0);
+		setSect(idx, v);
+		char out[128];
+		snprintf(out, sizeof(out), "OK %s base = 0x%08x", names[idx], (unsigned)v);
+		return out;
+	}
+
 	static std::string monitor_status_command() {
 		std::string out;
 		char line[512];
@@ -3700,6 +3749,10 @@ namespace barto_gdbserver {
 									// e9k-style train: break on value transition <from>-><to> at any address.
 									// syntax: monitor train <from> <to> [size=8|16|32] | ignore | clear
 									response += to_hex(monitor_train_command(cmd));
+								} else if(cmd == "base" || cmd.substr(0, strlen("base ")) == "base ") {
+									// e9k-style section bases for symbol resolution.
+									// syntax: monitor base | base text|data|bss <addr|clear> | base clear
+									response += to_hex(monitor_base_command(cmd));
 								} else if(cmd == "rewind" || cmd.substr(0, strlen("rewind ")) == "rewind ") {
 									// syntax: monitor rewind  (rewinds one frame; takes effect on next continue)
 									response += to_hex(monitor_rewind_command(cmd));

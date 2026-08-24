@@ -33,6 +33,7 @@ Guía "cuándo usar" completa para la IA:
 | `monitor watch` | Watchpoints con predicados y filtro por origen (e9k-style) |
 | `monitor protect` | Protect/cheat: bloquear escrituras o forzar valores |
 | `monitor train` | Romper cuando una escritura cambia un valor `from→to` en cualquier dirección + ignore list (e9k-style) |
+| `monitor base` | Consultar/fijar las bases runtime de sección (text/data/bss) para resolución de símbolos (e9k-style) |
 | `monitor rewind` | Rebobinar un frame (usa el rewind nativo de WinUAE) |
 
 ---
@@ -217,6 +218,24 @@ de bancos RAM (límite `MEMWATCH_STORE_SLOTS`); solo se cubren los bancos que
 caben en los slots de memwatch.
 
 Verificación: `mcp-winuae-emu/scripts/verify-train.mjs` (5/5).
+
+---
+
+## `monitor base`
+
+Estilo e9k: consultar / fijar las **bases runtime de sección** (`text`/`data`/`bss`)
+que se usan para resolver símbolos (`debug_addr = runtime_addr - base`).
+
+```
+monitor base                       # muestra text/data/bss (y avisa si no hay bases)
+monitor base text|data|bss <addr>  # fija la base de la seccion (hex o dec)
+monitor base text|data|bss clear   # limpia una seccion
+monitor base clear                 # limpia todas
+```
+
+Útil cuando el programa emulado informa sus secciones (p. ej. por el periférico
+`0xB70014/18/1C`) o para corregir la resolución de símbolos de un binario
+relocalizado. Verificación: `mcp-winuae-emu/scripts/verify-base.mjs` (3/3).
 
 ---
 
@@ -471,8 +490,10 @@ WinUAE (verificado 2026-08):
   `monitor train <from> <to> [size]`, `train ignore`, `train clear`. Añade
   `any_addr` + predicado `old` al núcleo de memwatch. Verificación:
   `verify-train.mjs` (5/5) + sin regresión (baterías 7/7, 7/7, 19/19).
+- `base` (bases de sección para resolución de símbolos) — ✅ **hecho** (v2.2):
+  `monitor base [text|data|bss <addr|clear>] | base clear`. Verificación:
+  `verify-base.mjs` (3/3).
 - `print` de expresiones DWARF — pendiente.
-- `base` explícito — pendiente.
 
 **5. Automatización**:
 - **Sampler profiler de hotspots** — ✅ **hecho** (host-side): `Amiga-Cpp/tools/profile/hotspots.mjs`
