@@ -518,7 +518,10 @@ WinUAE (verificado 2026-08):
   structs vía DWARF** del `.elf` (offset de miembros, arrays `[N]`, deref).
   Lector DWARF propio (`src/dwarf.ts`, ELF big-endian v4/v5). Verificación
   OFFLINE determinista: `verify-dwarf.mjs` (4/4: DemoGame size 5902,
-  `m_scene@2`, `m_scroll_x@60`, `RunStatus` size 16).
+  `m_scene@2`, `m_scroll_x@60`, `RunStatus` size 16). El e2e con el emulador
+  (`verify-print-e2e.mjs`) depende del boot (~25s hasta REFRESH_OFFSETS) y el
+  emulador puede crashear al consultar monitor durante la carga; la verificación
+  fiable es la offline.
 - Expresiones DWARF completas (variables locales en registros, `DW_OP_*`
   complejos) — pendiente.
 
