@@ -1384,7 +1384,20 @@ namespace barto_gdbserver {
 		const int one = 1;
 		const struct linger linger_1s = { 1, 1 };
 		constexpr auto name = _T("127.0.0.1");
-		constexpr auto port = _T("2345");
+		// Puerto GDB configurable por entorno (default 2345 = comportamiento clasico).
+		// Permite convivir con otras instancias/proyectos sin chocar en el puerto.
+		TCHAR portbuf[16];
+		_tcscpy(portbuf, _T("2345"));
+		{
+			const char* gdb_port_env = getenv("WINUAE_GDB_PORT");
+			if(gdb_port_env) {
+				int p = atoi(gdb_port_env);
+				if(p > 0 && p < 65536)
+					_stprintf(portbuf, _T("%d"), p);
+			}
+		}
+		const TCHAR* port = portbuf;
+		barto_log(_T("GDBSERVER: using port %s (env WINUAE_GDB_PORT)\n"), port);
 
 		err = GetAddrInfoW(name, port, nullptr, &socketinfo);
 		if(err < 0) {
