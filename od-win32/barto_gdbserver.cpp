@@ -4843,6 +4843,10 @@ start_profile:
 
 	void log_output(const TCHAR* tstring) {
 		auto utf8 = string_to_utf8(tstring);
+		if (log_file) {
+			fputs(utf8.c_str(), log_file);
+			fflush(log_file);
+		}
 		if(utf8.substr(0, 5) == "DBG: ") {
 			utf8 = utf8.substr(0, utf8.length() - 1); // get rid of extra newline from uaelib
 			for(size_t start = 0;;) { // append "DBG: " to every newline, because GDB splits text by lines and vscode doesn't know that the extra lines are DBG output

@@ -22,7 +22,7 @@ int disk_debug_track = -1;
 
 #define REVOLUTION_DEBUG 0
 #define MFM_VALIDATOR 0
-#define DISK_DEBUG_X 0
+#define DISK_DEBUG_X 1
 
 #include "uae.h"
 #include "options.h"
@@ -4494,6 +4494,13 @@ static int disk_doupdate_read(drive *drv, int floppybits)
 			dsksync_on = false;
 		}
 		if (!(adkcon & 0x200) && word == dsksync) {
+			if (dskdmaen == DSKDMA_READ) {
+				const int wp = drv->mfmpos >> 4;
+				write_log("SYNC mfmpos=%d pt=%08X len=%d MFM=%04X %04X %04X %04X\n",
+					drv->mfmpos, dskpt, dsklength, drv->bigmfmbuf[wp],
+					drv->bigmfmbuf[wp + 1], drv->bigmfmbuf[wp + 2],
+					drv->bigmfmbuf[wp + 3]);
+			}
 			wordsync_detected(false);
 #if DISK_DEBUG_X
 			write_log("%d %d %08x\n", dskdmaen, drv->mfmpos, M68K_GETPC);
