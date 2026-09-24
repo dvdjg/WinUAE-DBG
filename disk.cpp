@@ -22,7 +22,7 @@ int disk_debug_track = -1;
 
 #define REVOLUTION_DEBUG 0
 #define MFM_VALIDATOR 0
-#define DISK_DEBUG_X 1
+#define DISK_DEBUG_X 0
 
 #include "uae.h"
 #include "options.h"
