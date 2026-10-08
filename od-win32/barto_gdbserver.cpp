@@ -21,6 +21,7 @@
 #include "debugmem.h"
 #include "render.h" // AmigaMonitor
 #include "custom.h"
+#include "uaedbg_render.h"
 #include "xwin.h" // xcolnr
 #include "drawing.h" // color_entry
 #include "win32.h"
@@ -217,6 +218,7 @@ namespace barto_gdbserver {
 		rollback,
 		pause,
 		resume,
+		render,
 	};
 	struct side_channel_action {
 		unsigned id{};
@@ -1934,6 +1936,74 @@ namespace barto_gdbserver {
 		return out.str();
 	}
 
+	static std::string side_channel_render_now(const std::vector<std::string>& tokens) {
+		// render <bpl|spr|blt|cop>[,...] on|off     -> canales de DMA forzados on/off
+		// render cop-lines <from> <to>|clear        -> rango de lineas con el Copper cegado
+		if(tokens.size() < 2)
+			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"render <chans> on|off | render cop-lines <from> <to>|clear\"}";
+		if(tokens[1] == "cop-lines") {
+			if(tokens.size() >= 3 && tokens[2] == "clear") {
+				uaedbg_render_cop_line_from = -1;
+				uaedbg_render_cop_line_to = -1;
+			} else {
+				if(tokens.size() < 4)
+					return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"render cop-lines <from> <to>|clear\"}";
+				uae_u32 from = 0, to = 0;
+				if(!side_channel_parse_u32(tokens[2], from) || !side_channel_parse_u32(tokens[3], to))
+					return "{\"ok\":false,\"error\":\"bad_range\"}";
+				if(from > 511 || to > 511 || from > to)
+					return "{\"ok\":false,\"error\":\"bad_range\",\"max\":511}";
+				uaedbg_render_cop_line_from = (int)from;
+				uaedbg_render_cop_line_to = (int)to;
+			}
+		} else {
+			if(tokens.size() < 3)
+				return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"render <chans> on|off\"}";
+			bool on = false;
+			if(tokens[2] == "on")
+				on = true;
+			else if(tokens[2] == "off")
+				on = false;
+			else
+				return "{\"ok\":false,\"error\":\"bad_state\"}";
+			uae_u16 bits = 0;
+			const std::string& chans = tokens[1];
+			size_t start = 0;
+			for(;;) {
+				size_t pos = chans.find(',', start);
+				std::string name = chans.substr(start, pos == std::string::npos ? std::string::npos : pos - start);
+				if(name == "bpl")
+					bits |= DMA_BITPLANE;
+				else if(name == "spr")
+					bits |= DMA_SPRITE;
+				else if(name == "blt")
+					bits |= DMA_BLITTER;
+				else if(name == "cop")
+					bits |= DMA_COPPER;
+				else
+					return "{\"ok\":false,\"error\":\"bad_channel\",\"channels\":\"bpl,spr,blt,cop\"}";
+				if(pos == std::string::npos)
+					break;
+				start = pos + 1;
+			}
+			if(on)
+				uaedbg_render_off_mask &= ~bits;
+			else
+				uaedbg_render_off_mask |= bits;
+			uaedbg_render_apply((uae_u16)(bits & ~uaedbg_render_off_mask));
+		}
+		std::ostringstream out;
+		out << "{\"ok\":true"
+			<< ",\"bpl\":" << ((uaedbg_render_off_mask & DMA_BITPLANE) ? "false" : "true")
+			<< ",\"spr\":" << ((uaedbg_render_off_mask & DMA_SPRITE) ? "false" : "true")
+			<< ",\"blt\":" << ((uaedbg_render_off_mask & DMA_BLITTER) ? "false" : "true")
+			<< ",\"cop\":" << ((uaedbg_render_off_mask & DMA_COPPER) ? "false" : "true")
+			<< ",\"copLineFrom\":" << uaedbg_render_cop_line_from
+			<< ",\"copLineTo\":" << uaedbg_render_cop_line_to
+			<< "}";
+		return out.str();
+	}
+
 	static std::string side_channel_rollback_now(const std::vector<std::string>& tokens) {
 		if(tokens.size() < 2)
 			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"rollback <write-id>\"}";
@@ -2127,6 +2197,8 @@ namespace barto_gdbserver {
 				result = side_channel_pause_now();
 			} else if(action.type == side_channel_action_type::resume) {
 				result = side_channel_resume_now();
+			} else if(action.type == side_channel_action_type::render) {
+				result = side_channel_render_now(action.tokens);
 			}
 
 			std::lock_guard<std::mutex> lock(side_channel_action_mutex);
@@ -2262,6 +2334,25 @@ namespace barto_gdbserver {
 			if(!side_channel_has_takeover_lock())
 				return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
 			return side_channel_enqueue_action(side_channel_action_type::poke, side_channel_tokenize(line));
+		}
+		if(cmd == "render") {
+			// `render` (o `render status`): consulta sin lock. Cambios: lock takeover.
+			std::vector<std::string> tokens = side_channel_tokenize(line);
+			if(tokens.size() >= 2 && tokens[1] != "status") {
+				if(!side_channel_has_takeover_lock())
+					return "{\"ok\":false,\"error\":\"lock_required\",\"required\":\"takeover\"}";
+				return side_channel_enqueue_action(side_channel_action_type::render, tokens);
+			}
+			std::ostringstream out;
+			out << "{\"ok\":true"
+				<< ",\"bpl\":" << ((uaedbg_render_off_mask & DMA_BITPLANE) ? "false" : "true")
+				<< ",\"spr\":" << ((uaedbg_render_off_mask & DMA_SPRITE) ? "false" : "true")
+				<< ",\"blt\":" << ((uaedbg_render_off_mask & DMA_BLITTER) ? "false" : "true")
+				<< ",\"cop\":" << ((uaedbg_render_off_mask & DMA_COPPER) ? "false" : "true")
+				<< ",\"copLineFrom\":" << uaedbg_render_cop_line_from
+				<< ",\"copLineTo\":" << uaedbg_render_cop_line_to
+				<< "}";
+			return out.str();
 		}
 		if(cmd == "rollback") {
 			if(!side_channel_has_takeover_lock())

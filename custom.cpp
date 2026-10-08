@@ -38,6 +38,7 @@
 #include "traps.h"
 #include "gui.h"
 #include "picasso96.h"
+#include "uaedbg_render.h"
 #include "drawing.h"
 #include "savestate.h"
 #include "ar.h"
@@ -443,6 +444,11 @@ static uae_u16 intena2, intreq2;
 uae_u16 dmacon;
 static uae_u16 dmacon_next;
 uae_u16 adkcon; /* used by audio code */
+
+/* Debugger render toggles (canal lateral; ver include/uaedbg_render.h). */
+uae_u16 uaedbg_render_off_mask;
+int uaedbg_render_cop_line_from = -1;
+int uaedbg_render_cop_line_to = -1;
 uae_u16 last_custom_value;
 static bool dmacon_bpl;
 
@@ -3093,6 +3099,8 @@ static void DMACON(int hpos, uae_u16 v)
 
 	setclr(&dmacon, v);
 	dmacon &= 0x07FF;
+	/* Toggle de debugger: un canal enmascarado no puede quedar encendido (CPU o Copper). */
+	dmacon &= ~uaedbg_render_off_mask;
 
 	changed = dmacon ^ oldcon;
 
@@ -3187,6 +3195,17 @@ static void DMACON(int hpos, uae_u16 v)
 
 static int irq_forced;
 static evt_t irq_forced_delay;
+
+/* Aplica la mascara de canales apagados al DMACON vivo reutilizando el handler (sus
+   efectos laterales de cambio de canal incluidos). `newly_enabled` = bits que salen de la
+   mascara: se re-encienden con un SET (bit15) porque un canal apagado por el debugger
+   (p. ej. el Copper) no lo vuelve a encender nadie; despues se aplica el CLEAR de la
+   mascara. */
+void uaedbg_render_apply(uae_u16 newly_enabled)
+{
+	DMACON(0, (uae_u16)((newly_enabled & 0x07FF) | 0x8000));
+	DMACON(0, (uae_u16)(uaedbg_render_off_mask & 0x07FF));
+}
 
 void IRQ_forced(int lvl, int delay)
 {
@@ -4346,6 +4365,10 @@ static void custom_wput_copper(uaecptr pt, uaecptr addr, uae_u32 value, int noge
 #ifdef DEBUGGER
 	value = debug_putpeekdma_chipset(0xdff000 + addr, value, MW_MASK_COPPER, 0x08c);
 #endif
+	/* Rango de lineas cegado por el debugger (canal lateral): el Copper sigue ejecutando la
+	   lista (WAITs incluidos) pero sus escrituras de registro se descartan en ese tramo. */
+	if (uaedbg_render_cop_line_from >= 0 && vpos >= uaedbg_render_cop_line_from && vpos <= uaedbg_render_cop_line_to)
+		return;
 	copper_access = 1;
 	int reg = addr & 0x1fe;
 	int c = get_reg_chip(reg);
