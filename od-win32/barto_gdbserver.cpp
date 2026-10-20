@@ -1813,6 +1813,33 @@ namespace barto_gdbserver {
 		return out.str();
 	}
 
+	/* Relative events activate an unmapped mouse port before the Amiga reads
+	 * its JOY0DAT counter; see inputdevice.cpp:5772-5775/6660-6668. Direct
+	 * setmousestate returns without queuing movement when mice[mouse].enabled is
+	 * false (inputdevice.cpp:9785-9797). JOY0DAT is a quadrature counter per the
+	 * AHRM 3rd edition, chapter 8, “Reading Mouse/Trackball Controllers”
+	 * (Amiga-Cpp/docs/reference/ahrm/Amiga Hardware Reference Manual 3rd edition
+	 * (Commodore Amiga Inc.) (Z-Library).cat.md:6793-6801). */
+	static void debugger_mouse_move(int dx, int dy) {
+		send_input_event(INPUTEVENT_MOUSE1_HORIZ, dx, -1, 0);
+		send_input_event(INPUTEVENT_MOUSE1_VERT, dy, -1, 0);
+	}
+
+	static void debugger_mouse_absolute(int x, int y) {
+		debugger_mouse_move(0, 0);
+		setmousestate(0, 0, x, 1);
+		setmousestate(0, 1, y, 1);
+	}
+
+	static bool debugger_mouse_button(int button, int state) {
+		// Enable the port first, then use the same mouse-device button map as host input.
+		if(button < 0 || button > 2)
+			return false;
+		debugger_mouse_move(0, 0);
+		setmousebuttonstate(0, button, state ? 1 : 0);
+		return true;
+	}
+
 	static std::string side_channel_apply_input_now(const std::vector<std::string>& tokens) {
 		if(tokens.size() < 2)
 			return "{\"ok\":false,\"error\":\"bad_arguments\"}";
@@ -1820,23 +1847,20 @@ namespace barto_gdbserver {
 			if(tokens.size() >= 5 && tokens[2] == "abs") {
 				int x = atoi(tokens[3].c_str());
 				int y = atoi(tokens[4].c_str());
-				setmousestate(0, 0, x, 1);
-				setmousestate(0, 1, y, 1);
+				debugger_mouse_absolute(x, y);
 				return "{\"ok\":true,\"input\":\"mouse_abs\"}";
 			}
 			if(tokens.size() >= 5 && tokens[2] == "move") {
 				int dx = atoi(tokens[3].c_str());
 				int dy = atoi(tokens[4].c_str());
-				setmousestate(0, 0, dx, 0);
-				setmousestate(0, 1, dy, 0);
+				debugger_mouse_move(dx, dy);
 				return "{\"ok\":true,\"input\":\"mouse_move\"}";
 			}
 			if(tokens.size() >= 5 && tokens[2] == "button") {
 				int btn = atoi(tokens[3].c_str());
 				int state = atoi(tokens[4].c_str());
-				if(btn < 0 || btn > 2)
+				if(!debugger_mouse_button(btn, state))
 					return "{\"ok\":false,\"error\":\"bad_button\"}";
-				setmousebuttonstate(0, btn, state);
 				return "{\"ok\":true,\"input\":\"mouse_button\"}";
 			}
 		}
@@ -3773,8 +3797,7 @@ namespace barto_gdbserver {
 										int dx = atoi(sm.c_str());
 										auto sp = sm.find(' ');
 										int dy = sp != std::string::npos ? atoi(sm.c_str() + sp + 1) : 0;
-										setmousestate(0, 0, dx, 0);
-										setmousestate(0, 1, dy, 0);
+										debugger_mouse_move(dx, dy);
 										response += "OK";
 									} else if(cmd.substr(0, strlen("input mouse abs ")) == "input mouse abs ") {
 										// syntax: monitor input mouse abs <x> <y>
@@ -3782,8 +3805,7 @@ namespace barto_gdbserver {
 										int x = atoi(sa.c_str());
 										auto sp = sa.find(' ');
 										int y = sp != std::string::npos ? atoi(sa.c_str() + sp + 1) : 0;
-										setmousestate(0, 0, x, 1);
-										setmousestate(0, 1, y, 1);
+										debugger_mouse_absolute(x, y);
 										response += "OK";
 									} else if(cmd.substr(0, strlen("input mouse button ")) == "input mouse button ") {
 										// syntax: monitor input mouse button <0|1|2> <1|0>
@@ -3793,8 +3815,7 @@ namespace barto_gdbserver {
 										int bstate = 1;
 										auto sp = sb.find(' ');
 										if(sp != std::string::npos) bstate = atoi(sb.c_str() + sp + 1);
-										if(btn >= 0 && btn <= 2) {
-											setmousebuttonstate(0, btn, bstate);
+										if(debugger_mouse_button(btn, bstate)) {
 											response += "OK";
 										} else { response += "E01"; }
 									} else if(cmd.size() >= 4 && cmd.substr(0, 3) == "df0" && cmd[3] == ' ') {

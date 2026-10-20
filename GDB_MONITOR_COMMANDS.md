@@ -63,13 +63,13 @@ Simulate joystick/gamepad input.
 
 ### input mouse move \<dx\> \<dy\>
 
-Apply relative mouse movement (deltas in pixels).
+Apply relative mouse movement (Amiga mouse-count deltas). WinUAE routes these synthetic moves through `MOUSE1_HORIZ`/`MOUSE1_VERT` input events so a disabled mouse port is enabled before the guest reads `JOY0DAT`.
 
 - **Example**: `monitor input mouse move 50 -20`
 
 ### input mouse abs \<x\> \<y\>
 
-Set absolute mouse position.
+Set the host mouse device to an absolute coordinate. In classic mouse mode WinUAE converts it to a delta from the device's previous absolute sample; it is not a direct assignment to the guest's current pointer. The command first enables the guest mouse input mapping. Use `input mouse move` for a guest cursor path expressed from the in-game cursor position; reserve `abs` for mousehack/tablet setups or when the host-device baseline is known.
 
 - **Example**: `monitor input mouse abs 320 200`
 
@@ -77,7 +77,7 @@ Set absolute mouse position.
 
 Simulate mouse button press/release.
 
-- **button**: 0 = left, 1 = right, 2 = middle
+- **button**: 0 = left, 1 = right, 2 = middle. The command enables the port, then updates the corresponding mouse-device button state.
 - **Example**: `monitor input mouse button 0 1` (press left), `monitor input mouse button 0 0` (release)
 
 ### df0 / df1 / df2 / df3 insert \<path\>
