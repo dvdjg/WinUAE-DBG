@@ -195,9 +195,9 @@ Heartbeat watchdog sampled once per field; it does not disturb the CPU unless
 `pause` is requested and a GDB client is connected.
 
 ```text
-monitor watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]
-monitor watchdog status
-monitor watchdog disarm
+monitor watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause] [mask=0x..] [expect=0x..] [slot=N]
+monitor watchdog status [slot|all]
+monitor watchdog disarm [slot|all]
 ```
 
 The same commands are available on the side channel without the `monitor`

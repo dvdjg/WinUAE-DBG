@@ -200,21 +200,24 @@ namespace barto_gdbserver {
 	static std::string side_channel_profile_outname;
 	static std::string side_channel_profile_result;
 
-	// Side-channel watchdog: latch if a memory word stops changing for N fields.
-	// The sample runs once per vsync_pre (emulation thread); side-channel clients
-	// read the latched status without touching the CPU or the Copper.
+	// Side-channel watchdogs: latch if a masked memory word stops changing
+	// (or stops matching the expected value) for N fields. Samples run once per
+	// vsync_pre in the emulation thread; clients only read latched status.
 	enum class watchdog_mode {
 		latch,
 		pause,
 	};
-	struct watchdog_state {
-		std::mutex mutex;
+	static constexpr int kWatchdogSlots = 8;
+	struct watchdog_slot {
 		bool armed = false;
 		bool fired = false;
 		bool have_sample = false;
+		bool has_expected = false;
 		uae_u32 address = 0;
 		uae_u32 size = 4;
 		uae_u32 timeout_fields = 0;
+		uae_u32 mask = 0xffffffffu;
+		uae_u32 expected = 0;
 		uae_u32 last_value = 0;
 		uae_u32 current_value = 0;
 		uae_u32 last_change_frame = 0;
@@ -226,7 +229,8 @@ namespace barto_gdbserver {
 		watchdog_mode mode = watchdog_mode::latch;
 		const char* reason = "";
 	};
-	static watchdog_state side_channel_watchdog;
+	static std::mutex side_channel_watchdog_mutex;
+	static watchdog_slot side_channel_watchdog[kWatchdogSlots];
 	struct side_channel_write_audit {
 		unsigned id{};
 		uaecptr address{};
@@ -1904,20 +1908,51 @@ namespace barto_gdbserver {
 	}
 
 	// --- Watchdog ---------------------------------------------------------
-	// `latch`: only report the timeout. `pause`: also stop in the debugger
-	// when a GDB client is connected. The emulation thread samples one word
-	// per field in watchdog_tick().
+	// `latch` only reports; `pause` stops in the debugger when a GDB client is
+	// connected. Samples run once per field in vsync_pre().
 	static std::string side_channel_pause_now();
-	static std::string side_channel_watchdog_json_locked() {
-		const watchdog_state& w = side_channel_watchdog;
+
+	static bool watchdog_parse_u32(const std::string& text, uae_u32& out) {
+		char* end = nullptr;
+		const unsigned long long value = strtoull(text.c_str(), &end, 0);
+		if(end == text.c_str() || (end != nullptr && *end != '\0') || value > 0xffffffffull)
+			return false;
+		out = static_cast<uae_u32>(value);
+		return true;
+	}
+
+	static int watchdog_parse_slot(const std::string& text) {
+		if(text.empty())
+			return -1;
+		char* end = nullptr;
+		const long value = strtol(text.c_str(), &end, 10);
+		if(end == text.c_str() || (end != nullptr && *end != '\0') || value < 0 || value >= kWatchdogSlots)
+			return -1;
+		return static_cast<int>(value);
+	}
+
+	static void watchdog_fire_locked(watchdog_slot& w, const char* reason) {
+		w.fired = true;
+		w.reason = reason;
+		w.fired_frame = vsync_counter;
+		w.fired_pc = M68K_GETPC;
+		w.fired_sr = regs.sr;
+		w.fired_cycles = get_cycles();
+	}
+
+	static std::string watchdog_slot_json_locked(int slot, const watchdog_slot& w) {
 		std::ostringstream out;
 		out << "{\"ok\":true"
+			<< ",\"slot\":" << slot
 			<< ",\"frame\":" << vsync_counter
 			<< ",\"armed\":" << (w.armed ? "true" : "false")
 			<< ",\"fired\":" << (w.fired ? "true" : "false")
 			<< ",\"address\":\"0x" << hex32(w.address) << "\""
 			<< ",\"size\":" << w.size
 			<< ",\"timeoutFields\":" << w.timeout_fields
+			<< ",\"mask\":\"0x" << hex32(w.mask) << "\""
+			<< ",\"hasExpected\":" << (w.has_expected ? "true" : "false")
+			<< ",\"expected\":\"0x" << hex32(w.expected) << "\""
 			<< ",\"lastValue\":\"0x" << hex32(w.last_value) << "\""
 			<< ",\"currentValue\":\"0x" << hex32(w.current_value) << "\""
 			<< ",\"lastChangeFrame\":" << w.last_change_frame
@@ -1932,55 +1967,86 @@ namespace barto_gdbserver {
 		return out.str();
 	}
 
-	static std::string side_channel_watchdog_status_json() {
-		std::lock_guard<std::mutex> lock(side_channel_watchdog.mutex);
-		return side_channel_watchdog_json_locked();
+	static std::string side_channel_watchdog_status_json(int slot = 0) {
+		std::lock_guard<std::mutex> lock(side_channel_watchdog_mutex);
+		if(slot < 0 || slot >= kWatchdogSlots)
+			return "{\"ok\":false,\"error\":\"bad_slot\"}";
+		return watchdog_slot_json_locked(slot, side_channel_watchdog[slot]);
+	}
+
+	static std::string side_channel_watchdog_all_json() {
+		std::ostringstream out;
+		{
+			std::lock_guard<std::mutex> lock(side_channel_watchdog_mutex);
+			out << "{\"ok\":true,\"watchdogs\":[";
+			for(int i = 0; i < kWatchdogSlots; ++i) {
+				if(i > 0)
+					out << ",";
+				out << watchdog_slot_json_locked(i, side_channel_watchdog[i]);
+			}
+			out << "]}";
+		}
+		return out.str();
 	}
 
 	static void side_channel_watchdog_tick() {
 		bool pause_after = false;
 		{
-			std::lock_guard<std::mutex> lock(side_channel_watchdog.mutex);
-			watchdog_state& w = side_channel_watchdog;
-			if(!w.armed || w.fired)
-				return;
+			std::lock_guard<std::mutex> lock(side_channel_watchdog_mutex);
+			for(int slot = 0; slot < kWatchdogSlots; ++slot) {
+				watchdog_slot& w = side_channel_watchdog[slot];
+				if(!w.armed || w.fired)
+					continue;
 
-			uae_u32 value = 0;
-			if(!debug_safe_addr(static_cast<uaecptr>(w.address), static_cast<int>(w.size))) {
-				w.fired = true;
-				w.reason = "bad_address";
-				w.fired_frame = vsync_counter;
-				w.fired_pc = M68K_GETPC;
-				w.fired_sr = regs.sr;
-				w.fired_cycles = get_cycles();
-				w.current_value = 0;
-				pause_after = w.mode == watchdog_mode::pause;
-			} else {
+				if(!debug_safe_addr(static_cast<uaecptr>(w.address), static_cast<int>(w.size))) {
+					watchdog_fire_locked(w, "bad_address");
+					w.current_value = 0;
+					if(w.mode == watchdog_mode::pause && gdbconn != INVALID_SOCKET)
+						pause_after = true;
+					continue;
+				}
+
+				uae_u32 value = 0;
 				switch(w.size) {
 				case 1: value = memory_get_byte(static_cast<uaecptr>(w.address)); break;
 				case 2: value = memory_get_word(static_cast<uaecptr>(w.address)); break;
 				default: value = memory_get_long(static_cast<uaecptr>(w.address)); break;
 				}
 				w.current_value = value;
-				if(!w.have_sample) {
+				const uae_u32 masked = value & w.mask;
+
+				if(w.has_expected) {
+					if(masked == w.expected) {
+						w.have_sample = true;
+						w.last_value = masked;
+						w.last_change_frame = vsync_counter;
+						w.timeout_count = 0;
+					} else {
+						if(w.timeout_count < 0xffffffffu)
+							++w.timeout_count;
+						if(w.timeout_count >= w.timeout_fields) {
+							watchdog_fire_locked(w, "value_mismatch");
+							if(w.mode == watchdog_mode::pause && gdbconn != INVALID_SOCKET)
+								pause_after = true;
+						}
+					}
+				} else if(!w.have_sample) {
 					w.have_sample = true;
-					w.last_value = value;
+					w.last_value = masked;
 					w.last_change_frame = vsync_counter;
 					w.timeout_count = 0;
-				} else if(value != w.last_value) {
-					w.last_value = value;
+				} else if(masked != w.last_value) {
+					w.last_value = masked;
 					w.last_change_frame = vsync_counter;
 					w.timeout_count = 0;
-				} else if(w.timeout_fields > 0u &&
-					  static_cast<uae_u32>(vsync_counter - w.last_change_frame) >= w.timeout_fields) {
-					w.fired = true;
-					w.reason = "no_heartbeat";
-					w.fired_frame = vsync_counter;
-					w.fired_pc = M68K_GETPC;
-					w.fired_sr = regs.sr;
-					w.fired_cycles = get_cycles();
-					w.timeout_count = w.timeout_fields;
-					pause_after = w.mode == watchdog_mode::pause;
+				} else {
+					if(w.timeout_count < 0xffffffffu)
+						++w.timeout_count;
+					if(w.timeout_count >= w.timeout_fields) {
+						watchdog_fire_locked(w, "no_heartbeat");
+						if(w.mode == watchdog_mode::pause && gdbconn != INVALID_SOCKET)
+							pause_after = true;
+					}
 				}
 			}
 		}
@@ -1992,67 +2058,95 @@ namespace barto_gdbserver {
 	}
 
 	static std::string side_channel_watchdog_command(const std::string& line) {
-		std::istringstream in(line);
-		std::string cmd, sub;
-		in >> cmd >> sub;
-		watchdog_state& w = side_channel_watchdog;
+		const std::vector<std::string> tokens = side_channel_tokenize(line);
+		if(tokens.size() < 2)
+			return "{\"ok\":false,\"error\":\"bad_watchdog_command\"}";
+		const std::string& sub = tokens[1];
 
-		if(sub == "status")
-			return side_channel_watchdog_status_json();
+		if(sub == "status") {
+			if(tokens.size() >= 3 && tokens[2] == "all")
+				return side_channel_watchdog_all_json();
+			const int slot = tokens.size() >= 3 ? watchdog_parse_slot(tokens[2]) : 0;
+			if(slot < 0)
+				return "{\"ok\":false,\"error\":\"bad_slot\"}";
+			return side_channel_watchdog_status_json(slot);
+		}
 
 		if(sub == "disarm") {
-			std::lock_guard<std::mutex> lock(w.mutex);
-			w.armed = false;
-			w.fired = false;
-			w.have_sample = false;
-			w.timeout_count = 0;
-			w.reason = "";
-			return side_channel_watchdog_json_locked();
+			bool all = tokens.size() >= 3 && tokens[2] == "all";
+			const int slot = tokens.size() >= 3 && !all ? watchdog_parse_slot(tokens[2]) : (all ? -1 : 0);
+			if(!all && slot < 0)
+				return "{\"ok\":false,\"error\":\"bad_slot\"}";
+			{
+				std::lock_guard<std::mutex> lock(side_channel_watchdog_mutex);
+				if(all) {
+					for(int i = 0; i < kWatchdogSlots; ++i)
+						side_channel_watchdog[i] = watchdog_slot {};
+				} else {
+					side_channel_watchdog[slot] = watchdog_slot {};
+				}
+			}
+			return all ? side_channel_watchdog_all_json() : side_channel_watchdog_status_json(slot);
 		}
 
-		if(sub == "arm") {
-			std::string address_text, size_text, timeout_text, mode_text;
-			in >> address_text >> size_text >> timeout_text >> mode_text;
-			if(address_text.empty() || size_text.empty() || timeout_text.empty())
-				return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]\"}";
+		if(sub != "arm")
+			return "{\"ok\":false,\"error\":\"bad_watchdog_command\"}";
+		if(tokens.size() < 5)
+			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause] [mask=0x..] [expect=0x..] [slot=N]\"}";
 
-			char* end = nullptr;
-			const unsigned long long address_value = strtoull(address_text.c_str(), &end, 0);
-			if(end == address_text.c_str())
-				return "{\"ok\":false,\"error\":\"bad_address\"}";
-			const int size_value = atoi(size_text.c_str());
-			if(size_value != 1 && size_value != 2 && size_value != 4)
-				return "{\"ok\":false,\"error\":\"bad_size\"}";
-			int timeout_value = atoi(timeout_text.c_str());
-			if(timeout_value < 1)
-				return "{\"ok\":false,\"error\":\"bad_timeout\"}";
-			if(timeout_value > 1000000)
-				timeout_value = 1000000;
-			const watchdog_mode mode_value = mode_text == "pause" ? watchdog_mode::pause : watchdog_mode::latch;
+		uae_u32 address = 0;
+		if(!watchdog_parse_u32(tokens[2], address))
+			return "{\"ok\":false,\"error\":\"bad_address\"}";
+		const int size = atoi(tokens[3].c_str());
+		if(size != 1 && size != 2 && size != 4)
+			return "{\"ok\":false,\"error\":\"bad_size\"}";
+		int timeout = atoi(tokens[4].c_str());
+		if(timeout < 1)
+			return "{\"ok\":false,\"error\":\"bad_timeout\"}";
+		if(timeout > 1000000)
+			timeout = 1000000;
 
-			std::lock_guard<std::mutex> lock(w.mutex);
+		watchdog_mode mode = watchdog_mode::latch;
+		uae_u32 mask = 0xffffffffu;
+		uae_u32 expected = 0;
+		bool has_expected = false;
+		int slot = 0;
+		for(size_t i = 5; i < tokens.size(); ++i) {
+			const std::string& token = tokens[i];
+			if(token == "latch" || token == "pause") {
+				mode = token == "pause" ? watchdog_mode::pause : watchdog_mode::latch;
+			} else if(token.rfind("mask=", 0) == 0) {
+				if(!watchdog_parse_u32(token.substr(5), mask))
+					return "{\"ok\":false,\"error\":\"bad_mask\"}";
+			} else if(token.rfind("expect=", 0) == 0) {
+				if(!watchdog_parse_u32(token.substr(7), expected))
+					return "{\"ok\":false,\"error\":\"bad_expected\"}";
+				has_expected = true;
+			} else if(token.rfind("slot=", 0) == 0) {
+				slot = watchdog_parse_slot(token.substr(5));
+				if(slot < 0)
+					return "{\"ok\":false,\"error\":\"bad_slot\"}";
+			} else {
+				return "{\"ok\":false,\"error\":\"bad_argument\"}";
+			}
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(side_channel_watchdog_mutex);
+			watchdog_slot& w = side_channel_watchdog[slot];
+			w = watchdog_slot {};
 			w.armed = true;
-			w.fired = false;
-			w.have_sample = false;
-			w.address = static_cast<uae_u32>(address_value);
-			w.size = static_cast<uae_u32>(size_value);
-			w.timeout_fields = static_cast<uae_u32>(timeout_value);
-			w.last_value = 0;
-			w.current_value = 0;
+			w.address = address;
+			w.size = static_cast<uae_u32>(size);
+			w.timeout_fields = static_cast<uae_u32>(timeout);
+			w.mask = mask;
+			w.has_expected = has_expected;
+			w.expected = expected;
 			w.last_change_frame = vsync_counter;
-			w.fired_frame = 0;
-			w.fired_pc = 0;
-			w.fired_sr = 0;
-			w.fired_cycles = 0;
-			w.timeout_count = 0;
-			w.mode = mode_value;
-			w.reason = "";
-			return side_channel_watchdog_json_locked();
+			w.mode = mode;
 		}
-
-		return "{\"ok\":false,\"error\":\"bad_watchdog_command\"}";
+		return side_channel_watchdog_status_json(slot);
 	}
-
 	static std::string side_channel_start_profile_now(const std::vector<std::string>& tokens) {
 		if(tokens.size() < 3)
 			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"profile <frames> <out-file> [unwind-file]\"}";

@@ -46,17 +46,20 @@ Comprueba que una palabra de memoria cambia al menos una vez cada N campos.
 Si deja de cambiar, se dispara y queda latcheado (no repite).
 
 ```text
-monitor watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]
-monitor watchdog status
-monitor watchdog disarm
+monitor watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause] [mask=0x..] [expect=0x..] [slot=N]
+monitor watchdog status [slot|all]
+monitor watchdog disarm [slot|all]
 ```
 
 - `latch`: solo publica el estado (no toca la CPU).
-- `pause`: ademas para la CPU con el mismo camino que `side_channel_pause_now()` cuando hay GDB conectado.
-- La muestra corre una vez por campo en `vsync_pre`, no por instruccion.
-- El estado compacto tambien aparece en el JSON de `state` bajo `watchdog`.
+- `mask`: aplica una máscara al valor muestreado.
+- `expect`: exige `(valor & mask) == expect`; si no, dispara `value_mismatch` tras el timeout.
+- `slot`: 0..7; por defecto 0. `status all` recorre los ocho.
+- `pause`: además para la CPU con el mismo camino que `side_channel_pause_now()` cuando hay GDB conectado.
+- La muestra corre una vez por campo en `vsync_pre`, no por instrucción.
+- El estado compacto también aparece en el JSON de `state` bajo `watchdog`; `status all` lo devuelve en `watchdogs`.
 
-Uso desde el canal lateral: `watchdog arm 0x... 4 300 latch` y `watchdog status`.
+Uso desde el canal lateral: `watchdog arm 0x... 4 300 latch` y `watchdog status all`.
 
 ---
 
