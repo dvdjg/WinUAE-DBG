@@ -173,6 +173,8 @@ namespace barto_gdbserver {
 	//   regs
 	//   mem <hex-address> <hex-or-decimal-length>
 	//   runstatus <hex-address>
+	//   watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]
+	//   watchdog status | disarm
 	//
 	// Every reply is a single JSON line.  Keeping this beside the GDB server for
 	// now lets the channel reuse the same low-level memory/register helpers.  Once
@@ -197,6 +199,34 @@ namespace barto_gdbserver {
 	static bool side_channel_profile_active = false;
 	static std::string side_channel_profile_outname;
 	static std::string side_channel_profile_result;
+
+	// Side-channel watchdog: latch if a memory word stops changing for N fields.
+	// The sample runs once per vsync_pre (emulation thread); side-channel clients
+	// read the latched status without touching the CPU or the Copper.
+	enum class watchdog_mode {
+		latch,
+		pause,
+	};
+	struct watchdog_state {
+		std::mutex mutex;
+		bool armed = false;
+		bool fired = false;
+		bool have_sample = false;
+		uae_u32 address = 0;
+		uae_u32 size = 4;
+		uae_u32 timeout_fields = 0;
+		uae_u32 last_value = 0;
+		uae_u32 current_value = 0;
+		uae_u32 last_change_frame = 0;
+		uae_u32 fired_frame = 0;
+		uae_u32 fired_pc = 0;
+		uae_u32 fired_sr = 0;
+		uae_u64 fired_cycles = 0;
+		uae_u32 timeout_count = 0;
+		watchdog_mode mode = watchdog_mode::latch;
+		const char* reason = "";
+	};
+	static watchdog_state side_channel_watchdog;
 	struct side_channel_write_audit {
 		unsigned id{};
 		uaecptr address{};
@@ -1873,6 +1903,156 @@ namespace barto_gdbserver {
 		return "{\"ok\":false,\"error\":\"unsupported_input\"}";
 	}
 
+	// --- Watchdog ---------------------------------------------------------
+	// `latch`: only report the timeout. `pause`: also stop in the debugger
+	// when a GDB client is connected. The emulation thread samples one word
+	// per field in watchdog_tick().
+	static std::string side_channel_pause_now();
+	static std::string side_channel_watchdog_json_locked() {
+		const watchdog_state& w = side_channel_watchdog;
+		std::ostringstream out;
+		out << "{\"ok\":true"
+			<< ",\"frame\":" << vsync_counter
+			<< ",\"armed\":" << (w.armed ? "true" : "false")
+			<< ",\"fired\":" << (w.fired ? "true" : "false")
+			<< ",\"address\":\"0x" << hex32(w.address) << "\""
+			<< ",\"size\":" << w.size
+			<< ",\"timeoutFields\":" << w.timeout_fields
+			<< ",\"lastValue\":\"0x" << hex32(w.last_value) << "\""
+			<< ",\"currentValue\":\"0x" << hex32(w.current_value) << "\""
+			<< ",\"lastChangeFrame\":" << w.last_change_frame
+			<< ",\"firedFrame\":" << w.fired_frame
+			<< ",\"firedPc\":\"0x" << hex32(w.fired_pc) << "\""
+			<< ",\"firedSr\":\"0x" << hex32(w.fired_sr) << "\""
+			<< ",\"firedCycles\":" << (unsigned long long)w.fired_cycles
+			<< ",\"samples\":" << w.timeout_count
+			<< ",\"mode\":\"" << (w.mode == watchdog_mode::pause ? "pause" : "latch") << "\""
+			<< ",\"reason\":\"" << (w.reason ? w.reason : "") << "\""
+			<< "}";
+		return out.str();
+	}
+
+	static std::string side_channel_watchdog_status_json() {
+		std::lock_guard<std::mutex> lock(side_channel_watchdog.mutex);
+		return side_channel_watchdog_json_locked();
+	}
+
+	static void side_channel_watchdog_tick() {
+		bool pause_after = false;
+		{
+			std::lock_guard<std::mutex> lock(side_channel_watchdog.mutex);
+			watchdog_state& w = side_channel_watchdog;
+			if(!w.armed || w.fired)
+				return;
+
+			uae_u32 value = 0;
+			if(!debug_safe_addr(static_cast<uaecptr>(w.address), static_cast<int>(w.size))) {
+				w.fired = true;
+				w.reason = "bad_address";
+				w.fired_frame = vsync_counter;
+				w.fired_pc = M68K_GETPC;
+				w.fired_sr = regs.sr;
+				w.fired_cycles = get_cycles();
+				w.current_value = 0;
+				pause_after = w.mode == watchdog_mode::pause;
+			} else {
+				switch(w.size) {
+				case 1: value = memory_get_byte(static_cast<uaecptr>(w.address)); break;
+				case 2: value = memory_get_word(static_cast<uaecptr>(w.address)); break;
+				default: value = memory_get_long(static_cast<uaecptr>(w.address)); break;
+				}
+				w.current_value = value;
+				if(!w.have_sample) {
+					w.have_sample = true;
+					w.last_value = value;
+					w.last_change_frame = vsync_counter;
+					w.timeout_count = 0;
+				} else if(value != w.last_value) {
+					w.last_value = value;
+					w.last_change_frame = vsync_counter;
+					w.timeout_count = 0;
+				} else if(w.timeout_fields > 0u &&
+					  static_cast<uae_u32>(vsync_counter - w.last_change_frame) >= w.timeout_fields) {
+					w.fired = true;
+					w.reason = "no_heartbeat";
+					w.fired_frame = vsync_counter;
+					w.fired_pc = M68K_GETPC;
+					w.fired_sr = regs.sr;
+					w.fired_cycles = get_cycles();
+					w.timeout_count = w.timeout_fields;
+					pause_after = w.mode == watchdog_mode::pause;
+				}
+			}
+		}
+
+		if(pause_after && gdbconn != INVALID_SOCKET) {
+			barto_log("WATCHDOG: timeout, pausing at PC=0x%08x\n", (unsigned)M68K_GETPC);
+			(void)side_channel_pause_now();
+		}
+	}
+
+	static std::string side_channel_watchdog_command(const std::string& line) {
+		std::istringstream in(line);
+		std::string cmd, sub;
+		in >> cmd >> sub;
+		watchdog_state& w = side_channel_watchdog;
+
+		if(sub == "status")
+			return side_channel_watchdog_status_json();
+
+		if(sub == "disarm") {
+			std::lock_guard<std::mutex> lock(w.mutex);
+			w.armed = false;
+			w.fired = false;
+			w.have_sample = false;
+			w.timeout_count = 0;
+			w.reason = "";
+			return side_channel_watchdog_json_locked();
+		}
+
+		if(sub == "arm") {
+			std::string address_text, size_text, timeout_text, mode_text;
+			in >> address_text >> size_text >> timeout_text >> mode_text;
+			if(address_text.empty() || size_text.empty() || timeout_text.empty())
+				return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]\"}";
+
+			char* end = nullptr;
+			const unsigned long long address_value = strtoull(address_text.c_str(), &end, 0);
+			if(end == address_text.c_str())
+				return "{\"ok\":false,\"error\":\"bad_address\"}";
+			const int size_value = atoi(size_text.c_str());
+			if(size_value != 1 && size_value != 2 && size_value != 4)
+				return "{\"ok\":false,\"error\":\"bad_size\"}";
+			int timeout_value = atoi(timeout_text.c_str());
+			if(timeout_value < 1)
+				return "{\"ok\":false,\"error\":\"bad_timeout\"}";
+			if(timeout_value > 1000000)
+				timeout_value = 1000000;
+			const watchdog_mode mode_value = mode_text == "pause" ? watchdog_mode::pause : watchdog_mode::latch;
+
+			std::lock_guard<std::mutex> lock(w.mutex);
+			w.armed = true;
+			w.fired = false;
+			w.have_sample = false;
+			w.address = static_cast<uae_u32>(address_value);
+			w.size = static_cast<uae_u32>(size_value);
+			w.timeout_fields = static_cast<uae_u32>(timeout_value);
+			w.last_value = 0;
+			w.current_value = 0;
+			w.last_change_frame = vsync_counter;
+			w.fired_frame = 0;
+			w.fired_pc = 0;
+			w.fired_sr = 0;
+			w.fired_cycles = 0;
+			w.timeout_count = 0;
+			w.mode = mode_value;
+			w.reason = "";
+			return side_channel_watchdog_json_locked();
+		}
+
+		return "{\"ok\":false,\"error\":\"bad_watchdog_command\"}";
+	}
+
 	static std::string side_channel_start_profile_now(const std::vector<std::string>& tokens) {
 		if(tokens.size() < 3)
 			return "{\"ok\":false,\"error\":\"bad_arguments\",\"usage\":\"profile <frames> <out-file> [unwind-file]\"}";
@@ -2312,6 +2492,8 @@ namespace barto_gdbserver {
 			}
 			return "{\"ok\":false,\"error\":\"bad_lock_action\"}";
 		}
+		if(cmd == "watchdog")
+			return side_channel_watchdog_command(line);
 		if(cmd == "state") {
 			std::ostringstream out;
 			std::lock_guard<std::mutex> lock(side_channel_lock_mutex);
@@ -2333,6 +2515,7 @@ namespace barto_gdbserver {
 				<< ",\"pc\":\"0x" << hex32(M68K_GETPC) << "\""
 				<< ",\"sr\":\"0x" << hex32(regs.sr) << "\""
 				<< ",\"cycles\":" << (unsigned long long)get_cycles()
+				<< ",\"watchdog\":" << side_channel_watchdog_status_json()
 				<< "}";
 			return out.str();
 		}
@@ -3905,6 +4088,10 @@ namespace barto_gdbserver {
 										append_mem_bank_info(output, label, z3fastmem_bank[i]);
 									}
 									response += to_hex(output);
+								} else if(cmd == "watchdog" || cmd.substr(0, strlen("watchdog ")) == "watchdog ") {
+									// syntax: monitor watchdog arm <addr> <size> <timeout_fields> [latch|pause]
+									//         monitor watchdog status | disarm
+									response += to_hex(side_channel_watchdog_command(cmd));
 								} else if(cmd == "status" || cmd.substr(0, strlen("status ")) == "status ") {
 									// syntax: monitor status
 									response += to_hex(monitor_status_command());
@@ -4667,6 +4854,7 @@ namespace barto_gdbserver {
 		dp_map_peripheral(); // map debug peripheral as soon as the memory system is ready
 
 		side_channel_process_actions();
+		side_channel_watchdog_tick();
 
 		// MCP-WINUAE-EMU EXTENSION: Auto-activate debugger when GDB client connects
 		// This allows games loaded from ADF to be debugged without a debugging_trigger.

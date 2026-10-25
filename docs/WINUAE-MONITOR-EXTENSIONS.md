@@ -36,6 +36,27 @@ Guía "cuándo usar" completa para la IA:
 | `monitor base` | Consultar/fijar las bases runtime de sección (text/data/bss) para resolución de símbolos (e9k-style) |
 | `monitor print` | Leer y formatear un valor en memoria (addr / deref `*`) — e9k-style |
 | `monitor rewind` | Rebobinar un frame (usa el rewind nativo de WinUAE) |
+| `monitor watchdog` | Watchdog de heartbeat por memoria; latch o pausa en GDB |
+
+---
+
+## `monitor watchdog` / canal lateral `watchdog`
+
+Comprueba que una palabra de memoria cambia al menos una vez cada N campos.
+Si deja de cambiar, se dispara y queda latcheado (no repite).
+
+```text
+monitor watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]
+monitor watchdog status
+monitor watchdog disarm
+```
+
+- `latch`: solo publica el estado (no toca la CPU).
+- `pause`: ademas para la CPU con el mismo camino que `side_channel_pause_now()` cuando hay GDB conectado.
+- La muestra corre una vez por campo en `vsync_pre`, no por instruccion.
+- El estado compacto tambien aparece en el JSON de `state` bajo `watchdog`.
+
+Uso desde el canal lateral: `watchdog arm 0x... 4 300 latch` y `watchdog status`.
 
 ---
 

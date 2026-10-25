@@ -189,6 +189,20 @@ The output file format is compatible with the vscode-amiga-debug Frame Profiler 
 (gdb) monitor input key 0x44 0
 ```
 
+## watchdog
+
+Heartbeat watchdog sampled once per field; it does not disturb the CPU unless
+`pause` is requested and a GDB client is connected.
+
+```text
+monitor watchdog arm <addr> <size 1|2|4> <timeout_fields> [latch|pause]
+monitor watchdog status
+monitor watchdog disarm
+```
+
+The same commands are available on the side channel without the `monitor`
+prefix. A compact status is also included in the `state` JSON under `watchdog`.
+
 ## Usage from MCP (mcp-winuae-emu)
 
 The MCP server exposes monitor commands and a small set of **core tools**. Graphics/audio extraction and low-level debugging (e.g. [coppenheimer](https://github.com/losso3000/coppenheimer)-style toggles) are done with the same core tools — no redundant proxies:
