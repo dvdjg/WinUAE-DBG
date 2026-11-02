@@ -1125,6 +1125,7 @@ static void setmouseactive2(struct AmigaMonitor *mon, int active, bool allowpaus
 		if (focus) {
 			if (GetActiveWindow() != mon->hMainWnd && GetActiveWindow() != mon->hAmigaWnd) {
 				SetActiveWindow(mon->hMainWnd);
+				SetCapture(mon->hAmigaWnd);
 			}
 			//write_log(_T("setcapture\n"));
 #if MOUSECLIP_HIDE
@@ -2267,6 +2268,7 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		return 0;
 
 	case WM_LBUTTONUP:
+		if (currprefs.win32_absolute_mouse) ReleaseCapture();
 		if (inresizing) {
 			EndCustomResize(hWnd, FALSE);
 			return 0;
@@ -2290,6 +2292,7 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 				/* win32_absolute_mouse: position from WM_MOUSEMOVE; do not SetCapture/ClipCursor on click */
 			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
+				SetCapture(mon->hAmigaWnd);
 				SetFocus(mon->hAmigaWnd);
 				if (dinput_winmouse() >= 0) {
 					if (message == WM_LBUTTONDBLCLK && hGUIWnd) {
@@ -2341,6 +2344,7 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		if (!rp_mouseevent(-32768, -32768, 2, 2)) {
 			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
+				SetCapture(mon->hAmigaWnd);
 				SetFocus(mon->hAmigaWnd);
 				if (dinput_winmouse() >= 0)
 					setmousebuttonstate(dinput_winmouse(), 1, 1);
@@ -2370,6 +2374,7 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		if (!rp_mouseevent(-32768, -32768, 4, 4)) {
 			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
+				SetCapture(mon->hAmigaWnd);
 				SetFocus(mon->hAmigaWnd);
 				if (dinput_winmouse() >= 0 && !(currprefs.input_mouse_untrap & MOUSEUNTRAP_MIDDLEBUTTON))
 					setmousebuttonstate(dinput_winmouse(), 2, 1);
@@ -2403,6 +2408,7 @@ static LRESULT CALLBACK AmigaWindowProc(HWND hWnd, UINT message, WPARAM wParam, 
 		if (!rp_ismouseevent()) {
 			if (currprefs.win32_absolute_mouse && !gui_active) {
 				SetActiveWindow(mon->hMainWnd);
+				SetCapture(mon->hAmigaWnd);
 				SetFocus(mon->hAmigaWnd);
 				if (dinput_winmouse() >= 0)
 					handleXbutton(wParam, 1);
